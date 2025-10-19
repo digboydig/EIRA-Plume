@@ -325,14 +325,13 @@ with tab3:
 
     ---
     
-    ### Additional Resource: Dr. Abhradeep Majumder
+    ### Additional Resource:  
     
-    For further study and reference on Environmental Engineering and dispersion modeling, you may consult the work of:
+    For further study and reference on Environmental Engineering and dispersion modeling, you may consult the work and class notes of:
     
     **Dr. Abhradeep Majumder, Ph.D.**
-    * **Position:** Assistant Professor, Department of Civil Engineering, BITS Pilani-Hyderabad Campus
-    * **Contact:** Room No: D Block- 302, Tel: +91 40 66303 709 (O)
-    * **Academic Profiles:**
+    * Assistant Professor, Department of Civil Engineering, BITS Pilani-Hyderabad Campus
+    * Academic Profiles:
         * Scopus: [https://www.scopus.com/authid/detail.uri?authorId=57191504507](https://www.scopus.com/authid/detail.uri?authorId=57191504507)
         * ORCID: [https://orcid.org/0000-0002-0186-6450](https://orcid.org/0000-0002-0186-6450)
         * Google Scholar: [https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao](https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao)
