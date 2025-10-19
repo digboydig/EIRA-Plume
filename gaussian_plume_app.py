@@ -2,201 +2,381 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 
-# --- 1. Define Pasquill-Gifford Dispersion Coefficients ---
-# These are simplified power-law coefficients for sigma_y (crosswind) and sigma_z (vertical)
-# based on downwind distance X (in meters).
-# The coefficients are based on the approximation: sigma(x) = a * x^b
-# Note: Real-world models use piecewise functions, but this simple set is good for demonstration.
+# --- 1. CONFIGURATION AND MODEL PARAMETERS ---
 
-PG_COEFFICIENTS = {
-    # Stability Class: [a_y, b_y, a_z, b_z]
-    'A (Very Unstable)': [0.22, 0.90, 0.20, 0.91],
-    'B (Moderately Unstable)': [0.16, 0.90, 0.12, 0.91],
-    'C (Slightly Unstable)': [0.11, 0.90, 0.08, 0.91],
-    'D (Neutral)': [0.08, 0.90, 0.06, 0.894], # Most common/neutral
-    'E (Slightly Stable)': [0.06, 0.90, 0.03, 0.894],
-    'F (Moderately Stable)': [0.04, 0.90, 0.016, 0.894],
+# Dispersion coefficient formulas (sigma_y and sigma_z)
+# These are the Pasquill-Gifford curves, approximated by power laws (A*x^B)
+# x is the downwind distance in meters
+# Stability classes: A (Extremely Unstable) to F (Extremely Stable)
+# Coefficients are for 10^2 < x < 10^5 meters.
+
+# Format: [A, B] for sigma_y and sigma_z
+SIGMA_COEFFS = {
+    # Sigma_y coefficients (Lateral Dispersion)
+    'y': {
+        'A': [0.22, 0.16, 0.11, 0.08, 0.06, 0.04],  # A to F
+        'B': [0.90, 0.90, 0.90, 0.90, 0.90, 0.90]   # Simplified, constant exponent
+    },
+    # Sigma_z coefficients (Vertical Dispersion)
+    'z': {
+        'A': [0.20, 0.12, 0.08, 0.06, 0.03, 0.016], # A to F
+        'B': [1.00, 1.00, 1.00, 1.00, 1.00, 1.00]   # Simplified, constant exponent
+    },
+    # Mapping stability class to index for coefficient lookup
+    'index': {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5}
 }
 
-# --- 2. Gaussian Plume Model Functions ---
+# --- 2. MODEL FUNCTIONS ---
 
-def calculate_sigmas(x, stability_class):
-    """Calculates crosswind (sigma_y) and vertical (sigma_z) dispersion coefficients."""
-    if x == 0:
-        # Avoid division by zero at the source point
-        return 0.0, 0.0
+@st.cache_data
+def get_dispersion_coefficients(x, stability_class):
+    """Calculates sigma_y and sigma_z based on downwind distance and stability class."""
     
-    a_y, b_y, a_z, b_z = PG_COEFFICIENTS[stability_class]
-    
-    # Ensure x is in meters for the formula
-    sigma_y = a_y * (x) ** b_y
-    
-    # A common correction for stable classes (E, F) at short distance 
-    # is sometimes applied, but we stick to the simple power law here.
-    sigma_z = a_z * (x) ** b_z
-    
-    # Apply a minimum sigma value to prevent numerical instability at small x
-    min_sigma = 0.5 
-    return max(sigma_y, min_sigma), max(sigma_z, min_sigma)
+    # Get the index (0-5) for the stability class
+    try:
+        idx = SIGMA_COEFFS['index'][stability_class]
+    except KeyError:
+        # Since this is a utility function, we use st.error sparingly
+        return 0, 0
 
-def calculate_ground_concentration(Q, H, u, x, y, stability_class):
-    """
-    Calculates the ground-level concentration C(x, y, 0) using the Gaussian Plume Model.
+    # Retrieve coefficients
+    Ay = SIGMA_COEFFS['y']['A'][idx]
+    By = SIGMA_COEFFS['y']['B'][idx]
     
-    Units:
-    Q: Source strength (g/s)
-    H: Effective stack height (m)
-    u: Wind speed (m/s)
-    x: Downwind distance (m)
-    y: Crosswind distance (m)
-    C: Concentration (g/m^3)
+    Az = SIGMA_COEFFS['z']['A'][idx]
+    Bz = SIGMA_COEFFS['z']['B'][idx]
+
+    # Calculate sigma values (using a simplified power law approximation)
+    sigma_y = Ay * (x**By)
+    sigma_z = Az * (x**Bz)
+    
+    # Simple adjustment for stable conditions (F) to prevent extremely small sigma_z at short distances
+    if stability_class == 'F' and x < 100:
+        sigma_z = max(sigma_z, 1.0) # Ensure some initial mixing
+
+    return sigma_y, sigma_z
+
+@st.cache_data
+def gaussian_plume_model(x_m, y_m, H, Q, U, stability_class):
     """
-    if x <= 1.0: # Close to stack (x=0) is a singularity, handle it gracefully
-        return 0.0 
+    Calculates the ground-level concentration C(x, y, 0) using the Gaussian Plume Equation for a meshgrid.
+    """
+    # Initialize concentration array
+    C = np.zeros_like(x_m, dtype=float)
+    
+    for i in range(x_m.shape[0]):
+        for j in range(x_m.shape[1]):
+            x = x_m[i, j]
+            y = y_m[i, j]
+            
+            # Avoid division by zero at x=0
+            if x <= 0:
+                C[i, j] = 0.0
+                continue
+                
+            sigma_y, sigma_z = get_dispersion_coefficients(x, stability_class)
+            
+            # Check for division by zero (shouldn't happen with the x>0 check and sigma_z floor)
+            if sigma_y == 0 or sigma_z == 0:
+                C[i, j] = 0.0
+                continue
+            
+            # 1. Crosswind (y) term
+            exp_y = np.exp(-y**2 / (2 * sigma_y**2))
+            
+            # 2. Vertical (z) term (ground reflection)
+            exp_z = np.exp(-H**2 / (2 * sigma_z**2))
+            
+            # 3. Scaling Factor (Concentration depends linearly on Q/U)
+            scaling_factor = Q / (np.pi * U * sigma_y * sigma_z)
+            
+            # Total concentration
+            C[i, j] = scaling_factor * exp_y * exp_z
+            
+    return C
+
+def find_max_concentration(H, Q, U, stability_class):
+    """Finds the maximum ground-level concentration and its downwind distance (x) on the center-line (y=0)."""
+    
+    # Search range for x (downwind distance)
+    x_range = np.linspace(10, 5000, 500) # Search from 10m to 5000m
+    
+    max_C = 0.0
+    max_x = 0.0
+    
+    for x in x_range:
+        sigma_y, sigma_z = get_dispersion_coefficients(x, stability_class)
         
-    sigma_y, sigma_z = calculate_sigmas(x, stability_class)
-    
-    if sigma_y == 0 or sigma_z == 0 or u == 0:
+        # Avoid division by zero
+        if sigma_y == 0 or sigma_z == 0:
+            continue
+            
+        # Simplified equation for center-line C(x, 0, 0)
+        C_centerline = (Q / (np.pi * U * sigma_y * sigma_z)) * np.exp(-H**2 / (2 * sigma_z**2))
+        
+        if C_centerline > max_C:
+            max_C = C_centerline
+            max_x = x
+            
+    return max_C, max_x
+
+def calculate_single_point_concentration(x, y, H, Q, U, stability_class):
+    """Calculates the concentration C(x, y, 0) at a single specified point (scalar inputs)."""
+    if x <= 0:
         return 0.0
 
-    # Crosswind dispersion term
-    exp_y = np.exp(-0.5 * (y / sigma_y)**2)
+    sigma_y, sigma_z = get_dispersion_coefficients(x, stability_class)
+
+    if sigma_y == 0 or sigma_z == 0:
+        return 0.0
+
+    # 1. Crosswind (y) term
+    exp_y = np.exp(-y**2 / (2 * sigma_y**2))
     
-    # Vertical dispersion term (ground-level z=0, total reflection)
-    exp_z = np.exp(-0.5 * (H / sigma_z)**2)
+    # 2. Vertical (z) term (ground reflection)
+    exp_z = np.exp(-H**2 / (2 * sigma_z**2))
     
-    # Full Gaussian Plume Equation for C(x, y, 0)
-    C = (Q / (np.pi * u * sigma_y * sigma_z)) * exp_y * exp_z
+    # 3. Scaling Factor
+    scaling_factor = Q / (np.pi * U * sigma_y * sigma_z)
+    
+    # Total concentration (g/m^3)
+    C = scaling_factor * exp_y * exp_z
     
     return C
 
-# --- 3. Streamlit Application Layout and Logic ---
+# --- 3. STREAMLIT APP LAYOUT (MAIN PAGE) ---
 
-st.set_page_config(
-    page_title="Gaussian Plume Model Visualizer",
-    layout="wide",
-    initial_sidebar_state="expanded"
+st.set_page_config(layout="wide", page_title="Gaussian Plume Visualizer")
+
+st.title("Gaussian Plume Dispersion Visualizer")
+st.markdown("An interactive model to explore how source parameters and atmospheric stability affect pollutant spread and ground-level concentration.")
+
+# --- SIDEBAR (GLOBAL USER INPUTS) ---
+
+st.sidebar.header("Source & Environment Parameters")
+
+# 1. Emission Parameters
+st.sidebar.subheader("1. Source Strength")
+Q_g_s = st.sidebar.slider("Emission Rate ($Q$, g/s)", 10.0, 500.0, 100.0, step=10.0)
+H_m = st.sidebar.slider("Effective Stack Height ($H$, m)", 10.0, 200.0, 100.0, step=5.0)
+
+# 2. Atmospheric Conditions
+st.sidebar.subheader("2. Atmospheric Conditions")
+U_m_s = st.sidebar.slider("Wind Speed ($U$, m/s)", 1.0, 20.0, 5.0, step=0.5)
+
+stability_options = {'A': 'A - Extremely Unstable', 'B': 'B - Moderately Unstable', 'C': 'C - Slightly Unstable',
+                     'D': 'D - Neutral (Overcast/High Wind)', 'E': 'E - Slightly Stable', 'F': 'F - Moderately Stable'}
+stability_class = st.sidebar.selectbox("Atmospheric Stability Class", options=list(stability_options.keys()), format_func=lambda x: stability_options[x], index=3)
+
+st.sidebar.markdown(
+    """
+    <small>
+    The Stability Class determines the rate of atmospheric mixing.
+    </small>
+    """, unsafe_allow_html=True
 )
 
-st.title("🏭 Gaussian Plume Model Visualizer")
-st.markdown("An interactive tool to explore pollutant dispersion and ground-level concentration based on the Pasquill-Gifford Gaussian Plume Model.")
+# --- TABS CONTAINER ---
+tab1, tab2, tab3 = st.tabs(["Plume Visualizer", "Problem Solver", "Theory & Assumptions"])
 
-# --- Sidebar Inputs ---
-with st.sidebar:
-    st.header("Model Parameters")
-    
-    # Source Parameters
-    st.subheader("Source & Meteorological Data")
-    Q = st.slider("Source Strength ($Q$, g/s)", 10.0, 500.0, 100.0, 10.0)
-    H = st.slider("Effective Stack Height ($H$, m)", 10.0, 200.0, 50.0, 5.0)
-    u = st.slider("Wind Speed ($u$, m/s)", 1.0, 15.0, 5.0, 0.5)
-    
-    stability_class = st.selectbox(
-        "Atmospheric Stability Class",
-        options=list(PG_COEFFICIENTS.keys()),
-        index=3 # Default to Neutral (D)
-    )
-    
-    st.subheader("Simulation Area")
-    max_x = st.slider("Max Downwind Distance (m)", 500, 5000, 1500, 100)
-    max_y = st.slider("Max Crosswind Distance (m)", 100, 1000, 400, 50)
+# --- TAB 1: PLUME VISUALIZER ---
+with tab1:
+    col1, col2 = st.columns([3, 2])
 
-    ## SIDEBAR ATTRIBUTION
-    st.sidebar.markdown("---") # Visual separator from the summary
-    
-    # Using st.sidebar.markdown with HTML for custom styling:
-    st.sidebar.markdown(
-        "<div style='text-align: left; font-size: 10px; color: gray;'>"
-        "<b>Plume Visualizer</b><br>"
-        "Developed by: <b>Subodh Purohit</b><br>"
-        "</div>", 
-        unsafe_allow_html=True
-    )
+    with col1:
+        st.header("Plume Concentration Contour Map")
 
-
-# --- Main Area Visualization ---
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.header("Ground-Level Concentration Contour Plot")
-    
-    # Create X and Y arrays
-    X = np.linspace(0, max_x, 100)
-    Y = np.linspace(-max_y, max_y, 100)
-    X, Y = np.meshgrid(X, Y)
-    
-    # Calculate Concentration Z for all (X, Y) points
-    Z = np.zeros_like(X)
-    
-    # Vectorize the calculation to apply it across the entire grid efficiently
-    # We use a wrapper for the vector function
-    vectorized_calc = np.vectorize(calculate_ground_concentration)
-    
-    # Calculate Z
-    Z = vectorized_calc(Q, H, u, X, Y, stability_class)
-    
-    # --- Plotting ---
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Create the contour plot
-    # Use logarithmic spacing for levels for better visualization of the tail
-    max_c = np.max(Z)
-    if max_c > 1e-9:
-        levels = np.logspace(np.log10(max_c * 0.01), np.log10(max_c), 10)
-    else:
-        levels = np.linspace(0.01, 1.0, 10) * 1e-6 # Fallback small values
-
-    # Plot the contours
-    contour = ax.contourf(X, Y, Z, levels=levels, cmap='viridis')
-    
-    # Add a white dot for the stack location
-    ax.plot(0, 0, 'w*', markersize=12, label='Stack Location')
-    
-    # Color bar
-    cbar = fig.colorbar(contour, ax=ax, format='%.2e')
-    cbar.set_label('Concentration ($C(x, y, 0)$, g/m$^3$)')
-    
-    ax.set_xlabel("Downwind Distance ($x$, m)")
-    ax.set_ylabel("Crosswind Distance ($y$, m)")
-    ax.set_title(f"Concentration Profile for Class: {stability_class}")
-    ax.grid(True, linestyle='--')
-    
-    # Display the plot in Streamlit
-    st.pyplot(fig)
-
-
-with col2:
-    st.header("Key Findings")
-    
-    # Calculate key metrics
-    # 1. Max Ground Concentration
-    if max_c > 0:
-        max_c_value = np.max(Z)
-        # Find the coordinates (x, y) of the max concentration
-        y_idx, x_idx = np.unravel_index(np.argmax(Z), Z.shape)
-        x_max_c = X[y_idx, x_idx]
-        y_max_c = Y[y_idx, x_idx]
+        # Define the domain for visualization
+        X_MAX = 4000  # meters downwind
+        Y_MAX = 500   # meters crosswind (half-width, total 1000m)
         
-        st.metric("Max Ground Concentration", f"{max_c_value:.4e} g/m³")
-        st.markdown(f"**Occurs at:** $x \\approx {x_max_c:.0f}$ m, $y \\approx {y_max_c:.0f}$ m")
+        # Create meshgrid for X and Y coordinates
+        x_range = np.linspace(0, X_MAX, 200)
+        y_range = np.linspace(-Y_MAX, Y_MAX, 100)
+        X, Y = np.meshgrid(x_range, y_range)
+
+        # Calculate concentrations (C in g/m^3)
+        C_values = gaussian_plume_model(X, Y, H_m, Q_g_s, U_m_s, stability_class)
+
+        # Convert to micrograms per cubic meter (μg/m^3) for better scale display
+        C_ug_m3 = C_values * 1e6
         
-        # 2. Sigma values at Max X
-        sigma_y_end, sigma_z_end = calculate_sigmas(max_x, stability_class)
-        st.markdown("---")
-        # CORRECTED: Changed "$x=$$%d$ m" to an f-string using inline math "$x={max_x}$ m"
-        st.subheader(f"Plume Dimensions (at $x={max_x}$ m)")
-        st.metric("Crosswind Dispersion ($\sigma_y$)", f"{sigma_y_end:.2f} m")
-        st.metric("Vertical Dispersion ($\sigma_z$)", f"{sigma_z_end:.2f} m")
-    else:
-        st.info("Adjust parameters to generate a measurable plume.")
+        # Ensure there is data to plot before proceeding
+        if np.max(C_ug_m3) > 1e-6:
+
+            # --- PLOTTING ---
+            fig, ax = plt.subplots(figsize=(10, 5))
+            
+            # Use log scale for contours to better show the edges of the plume
+            levels = np.linspace(0, np.max(C_ug_m3), 15)
+            
+            # Plot the contour map
+            c = ax.contourf(X, Y, C_ug_m3, levels=levels, cmap='jet')
+            
+            # Add a color bar
+            cbar = fig.colorbar(c, ax=ax, label=r'Concentration ($C(x,y,0)$ in $\mu g/m^3$)')
+            
+            # Plot center-line and source location
+            ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
+            ax.plot([0], [0], 'ro', markersize=8, label='Stack Location (x=0, y=0)')
+            
+            # Set titles and labels
+            ax.set_title(f'Ground-Level Concentration Map (Stability: {stability_class}, H: {H_m}m)')
+            ax.set_xlabel('Downwind Distance ($x$, m)')
+            ax.set_ylabel('Crosswind Distance ($y$, m)')
+            ax.set_xlim(0, X_MAX)
+            ax.set_ylim(-Y_MAX, Y_MAX)
+            ax.legend(loc='upper right')
+            ax.grid(linestyle=':', alpha=0.5)
+            
+            st.pyplot(fig)
+        else:
+            st.warning("The calculated concentration is near zero. Please adjust parameters (e.g., lower H, increase Q, or select a more unstable class).")
+
+    with col2:
+        st.header("Key Model Findings")
         
-    st.markdown("---")
-    st.caption("""
-        **Model Note:** This visualizer uses the basic Gaussian Plume Model 
-        for ground-level concentration (z=0) with total reflection. 
-        It employs simplified power-law coefficients for the dispersion 
-        parameters ($\sigma_y, \sigma_z$).
+        # 1. Calculate Max Concentration
+        max_C_g_m3, max_x = find_max_concentration(H_m, Q_g_s, U_m_s, stability_class)
+        max_C_ug_m3 = max_C_g_m3 * 1e6
+        
+        # Max Concentration Metric
+        st.metric(
+            label="Max Ground Concentration (on center-line)",
+            value=f"{max_C_ug_m3:,.2f}"
+        )
+        st.markdown(r"**Units:** $\mu g/m^3$") 
+
+        st.metric(
+            label="Downwind Distance of Max Concentration ($x_{max}$)",
+            value=f"{max_x:,.0f} m"
+        )
+
+        # 2. Calculate Plume Dimensions at max_x
+        if max_x > 0:
+            sigma_y_max_x, sigma_z_max_x = get_dispersion_coefficients(max_x, stability_class)
+            
+            st.markdown(f"### Plume Dimensions (at $x={int(max_x)}$ m)")
+            
+            # Plume Half-Width (y)
+            st.metric(
+                label="Plume Half-Width ($2\sigma_y$)",
+                value=f"{2 * sigma_y_max_x:,.1f} m"
+            )
+
+            # Plume Height (z)
+            st.metric(
+                label="Plume Mixing Height ($4.3\sigma_z$ from ground)",
+                value=f"{4.3 * sigma_z_max_x:,.1f} m"
+            )
+        else:
+            st.info("Plume maximum could not be calculated. Ensure H is not too large or Q is not too small.")
+
+# --- TAB 2: PROBLEM SOLVER ---
+with tab2:
+    st.header("Point Concentration Solver")
+    st.markdown("Use the parameters set in the sidebar to calculate the ground-level concentration $C(x, y, 0)$ at any specific point.")
+
+    st.markdown(f"""
+    **Current Model Parameters in use:**
+    * Emission Rate ($Q$): **{Q_g_s} g/s**
+    * Effective Stack Height ($H$): **{H_m} m**
+    * Wind Speed ($U$): **{U_m_s} m/s**
+    * Stability Class: **{stability_class}**
     """)
+    st.markdown("---")
 
-# Ensure the plot is cleared after Streamlit uses it
-plt.close(fig)
+    x_input = st.number_input("Downwind Distance ($x$, m)", min_value=1.0, value=1000.0, step=10.0, key='x_input_solver')
+    y_input = st.number_input("Crosswind Distance ($y$, m)", value=0.0, step=10.0, key='y_input_solver')
+
+    if st.button("Calculate Point Concentration", key='solve_button'):
+        point_C_g_m3 = calculate_single_point_concentration(x_input, y_input, H_m, Q_g_s, U_m_s, stability_class)
+        point_C_ug_m3 = point_C_g_m3 * 1e6
+
+        st.markdown("### Result")
+        if point_C_ug_m3 > 0:
+            st.success(f"Concentration at ({x_input}m, {y_input}m):")
+            st.metric(
+                label="Calculated Concentration",
+                value=f"{point_C_ug_m3:,.2f}"
+            )
+            st.markdown(r"**Units:** $\mu g/m^3$")
+            
+            # Show dispersion coefficients used for this calculation
+            sigma_y_point, sigma_z_point = get_dispersion_coefficients(x_input, stability_class)
+            st.markdown(f"""
+            **Dispersion Coefficients Used at x={x_input} m:**
+            * $\sigma_y$: **{sigma_y_point:,.2f} m**
+            * $\sigma_z$: **{sigma_z_point:,.2f} m**
+            """)
+        else:
+            st.error("Concentration is near zero or calculation failed. Ensure $x > 0$ and parameters are realistic.")
+
+# --- TAB 3: THEORY & ASSUMPTIONS ---
+with tab3:
+    st.header("Gaussian Plume Model Theory & Assumptions")
+    
+    st.markdown(
+        """
+    ***Primary Source Reference:*** *These notes are adapted from the lecture materials on Gaussian Plumes by E. Savory, available at [eng.uwo.ca/people/esavory/gaussian plumes.pdf](https://www.eng.uwo.ca/people/esavory/gaussian%20plumes.pdf)*.
+
+    ---
+    
+    ### Additional Resource: Dr. Abhradeep Majumder
+    
+    For further study and reference on Environmental Engineering and dispersion modeling, you may consult the work of:
+    
+    **Dr. Abhradeep Majumder, Ph.D.**
+    * **Position:** Assistant Professor, Department of Civil Engineering, BITS Pilani-Hyderabad Campus
+    * **Contact:** Room No: D Block- 302, Tel: +91 40 66303 709 (O)
+    * **Academic Profiles:**
+        * Scopus: [https://www.scopus.com/authid/detail.uri?authorId=57191504507](https://www.scopus.com/authid/detail.uri?authorId=57191504507)
+        * ORCID: [https://orcid.org/0000-0002-0186-6450](https://orcid.org/0000-0002-0186-6450)
+        * Google Scholar: [https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao](https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao)
+        * LinkedIn: [linkedin.com/in/abhradeep-majumder-36503777/](https://linkedin.com/in/abhradeep-majumder-36503777/)
+        
+    ---
+    
+
+    The Gaussian Plume Model (GPM) is the fundamental steady-state model for predicting the dispersion of continuous, buoyant pollutants released from a single point source, such as a chimney stack. It assumes that the pollutant concentration forms a Gaussian (normal) distribution in both the lateral ($y$) and vertical ($z$) directions, normal to the mean wind direction ($x$).
+    
+    ### Key Assumptions
+    1.  **Steady State:** Emission rate ($Q$) and wind speed ($U$) are constant.
+    2.  **Uniform Wind:** Wind flows uniformly in the $x$-direction.
+    3.  **Total Reflection:** The pollutant is completely reflected off the ground surface (a virtual "mirror image" source is used).
+    4.  **Gaussian Distribution:** Concentration profiles are Gaussian in the cross-wind and vertical directions.
+    
+    ### Core Ground-Level Equation
+    For ground-level concentrations ($z=0$), the total concentration $C(x, y, 0)$ is the sum of the concentration from the real source and its virtual image source. The simplified equation is:
+    
+    $$
+    C(x, y, 0) = \\frac{Q}{\pi U \sigma_y \sigma_z} \exp\\left(-\\frac{y^2}{2\sigma_y^2}\\right) \exp\\left(-\\frac{H^2}{2\sigma_z^2}\\right)
+    $$
+    
+    Where:
+    * $C(x, y, 0)$: Ground-level concentration ($\mu g/m^3$)
+    * $Q$: Source Emission Rate ($g/s$)
+    * $U$: Mean Wind Speed ($m/s$)
+    * $H$: **Effective Stack Height** ($m$) - Sum of physical stack height and plume rise ($\Delta h$).
+    * $\sigma_y$ and $\sigma_z$: Lateral and Vertical Dispersion Coefficients ($m$)
+    
+    ### Dispersion Coefficients ($\sigma_y$ and $\sigma_z$)
+    These coefficients represent the standard deviations of the Gaussian distributions in the cross-wind and vertical directions, respectively. Their values are empirical (experimentally derived) and depend heavily on two main factors:
+    1.  **Downwind Distance ($x$):** The plume spreads as it travels, so $\sigma_y$ and $\sigma_z$ increase with $x$.
+    2.  **Atmospheric Stability Class (A-F):** This is the most crucial parameter.
+        * **Unstable (A, B, C):** Characterized by high turbulence (e.g., sunny day). $\sigma_y$ and $\sigma_z$ are large, leading to rapid mixing and a plume that "touches down" quickly.
+        * **Neutral (D):** Moderate mixing (e.g., overcast day, high wind).
+        * **Stable (E, F):** Characterized by low turbulence (e.g., clear night). $\sigma_z$ is very small, leading to poor vertical mixing and a narrow plume that travels far downwind before reaching maximum ground concentration.
+
+    The model uses power law approximations ($\sigma = A \cdot x^B$) where $A$ and $B$ are constants derived from the chosen Pasquill stability class.
+
+
+     ---
+
+    ###### Application Development
+    
+    This interactive Gaussian Plume Dispersion Model application was developed by **Subodh Purohit** to provide a dynamic, educational tool for exploring pollutant spread based on atmospheric and source conditions.
+
+    ---
+
+    """)
