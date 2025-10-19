@@ -176,6 +176,9 @@ st.sidebar.markdown(
     """, unsafe_allow_html=True
 )
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("Developed by: **Subodh Purohit**")
+
 # --- TABS CONTAINER ---
 tab1, tab2, tab3 = st.tabs(["Plume Visualizer", "Problem Solver", "Theory & Assumptions"])
 
