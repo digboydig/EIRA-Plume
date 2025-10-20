@@ -278,7 +278,7 @@ with tab1:
 # --- TAB 2: PROBLEM SOLVER ---
 with tab2:
     st.header("Point Concentration & $x_{max}$ Solver (Custom Inputs)")
-    st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters**")
+    st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters** independent of the visualizer's sidebar.")
     
     # --- CUSTOM INPUTS FOR THE SOLVER ---
     colA, colB, colC = st.columns(3)
@@ -359,10 +359,13 @@ with tab2:
     Q1_X = 800.0   # m
     Q1_STAB = 'D'
 
+    # Set z = H for part (a) - using a distinct variable to prevent runtime conflicts
+    Q1_Z_centerline = Q1_H 
+    
     sigma_y_Q1, sigma_z_Q1 = get_dispersion_coefficients(Q1_X, Q1_STAB)
     
     # (a) Concentration on plume centre-line (C(800, 0, H))
-    C_plume_center_g_m3 = calculate_any_point_concentration(Q1_X, 0.0, Q1_H, Q1_H, Q1_Q, Q1_U, Q1_STAB)
+    C_plume_center_g_m3 = calculate_any_point_concentration(Q1_X, 0.0, Q1_Z_centerline, Q1_H, Q1_Q, Q1_U, Q1_STAB)
     C_plume_center_ug_m3 = C_plume_center_g_m3 * 1e6
     
     # (b) Ground level concentration at 800m (C(800, 0, 0))
@@ -464,7 +467,9 @@ with tab2:
     st.subheader("Question 4: Gross Screening vs. Gaussian Plume")
     st.markdown("""
     **Parameters:** Ground level release $H=4 \text{ m}$, $Q=0.5 \text{ g/s}$, $U=1 \text{ m/s}$, $x=4000 \text{ m}$.
-    **Stability Assumption:** For the Gaussian model to match the "worst case" concentration target at this distance, we assume **Stability Class F** (Moderately Stable).
+    **Stability Assumption:** For the Gaussian model to show a reasonable 'worst case' near the target, we use **Stability Class F** (Moderately Stable), which minimizes vertical mixing.
+    
+    **Gross Screening Formula:** $C_{wc} = \\frac{10^9 Q}{U H_{wc} W_{wc}}$, where $H_{wc}=50 \text{ m}$ and $W_{wc}=0.1x$.
     """)
     
     Q4_Q = 0.5     # g/s
