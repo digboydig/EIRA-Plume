@@ -277,43 +277,228 @@ with tab1:
 
 # --- TAB 2: PROBLEM SOLVER ---
 with tab2:
-    st.header("Point Concentration Solver")
-    st.markdown("Use the parameters set in the sidebar to calculate the ground-level concentration $C(x, y, 0)$ at any specific point.")
+    st.header("Point Concentration & $x_{max}$ Solver (Custom Inputs)")
+    st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters** independent of the visualizer's sidebar.")
+    
+    # --- CUSTOM INPUTS FOR THE SOLVER ---
+    colA, colB, colC = st.columns(3)
+    
+    with colA:
+        solver_Q = st.number_input("1. Emission Rate ($Q$, g/s)", min_value=1.0, value=100.0, step=10.0, key='Q_solver')
+    with colB:
+        solver_H = st.number_input("2. Effective Stack Height ($H$, m)", min_value=1.0, value=100.0, step=5.0, key='H_solver')
+    with colC:
+        solver_U = st.number_input("3. Wind Speed ($U$, m/s)", min_value=0.1, value=5.0, step=0.5, key='U_solver')
 
-    st.markdown(f"""
-    **Current Model Parameters in use:**
-    * Emission Rate ($Q$): **{Q_g_s} g/s**
-    * Effective Stack Height ($H$): **{H_m} m**
-    * Wind Speed ($U$): **{U_m_s} m/s**
-    * Stability Class: **{stability_class}**
-    """)
+    solver_stab_class = st.selectbox("4. Atmospheric Stability Class", options=list(stability_options.keys()), format_func=lambda x: stability_options[x], index=3, key='stability_solver_key')
+    
     st.markdown("---")
+    st.subheader("5. Point Location Input")
+    colX, colY, colZ = st.columns(3)
+    
+    with colX:
+        solver_x = st.number_input("Downwind Distance ($x$, m)", min_value=1.0, value=1000.0, step=10.0, key='x_input_solver')
+    with colY:
+        solver_y = st.number_input("Crosswind Distance ($y$, m)", value=0.0, step=10.0, key='y_input_solver')
+    with colZ:
+        solver_z = st.number_input("Vertical Height ($z$, m) (Use 0 for ground level)", value=0.0, step=10.0, key='z_input_solver')
 
-    x_input = st.number_input("Downwind Distance ($x$, m)", min_value=1.0, value=1000.0, step=10.0, key='x_input_solver')
-    y_input = st.number_input("Crosswind Distance ($y$, m)", value=0.0, step=10.0, key='y_input_solver')
-
-    if st.button("Calculate Point Concentration", key='solve_button'):
-        point_C_g_m3 = calculate_single_point_concentration(x_input, y_input, H_m, Q_g_s, U_m_s, stability_class)
+    
+    # --- CALCULATION AND DISPLAY ---
+    if st.button("Run Calculations for Custom Parameters", key='solve_button'):
+        st.subheader("Calculated Results")
+        
+        # 1. Calculate Concentration at the specified point (x, y, z)
+        point_C_g_m3 = calculate_any_point_concentration(solver_x, solver_y, solver_z, solver_H, solver_Q, solver_U, solver_stab_class)
         point_C_ug_m3 = point_C_g_m3 * 1e6
-
-        st.markdown("### Result")
-        if point_C_ug_m3 > 0:
-            st.success(f"Concentration at ({x_input}m, {y_input}m):")
+        
+        # 2. Calculate Max Ground Concentration and its location (x_max)
+        max_C_g_m3, max_x_loc = find_max_concentration(solver_H, solver_Q, solver_U, solver_stab_class)
+        max_C_ug_m3 = max_C_g_m3 * 1e6
+        
+        colR1, colR2 = st.columns(2)
+        
+        with colR1:
             st.metric(
-                label="Calculated Concentration",
-                value=f"{point_C_ug_m3:,.2f}"
+                label=f"Concentration at $C({solver_x}m, {solver_y}m, {solver_z}m)$",
+                value=f"{point_C_ug_m3:,.2f} $\mu g/m^3$"
             )
-            st.markdown(r"**Units:** $\mu g/m^3$")
-            
-            # Show dispersion coefficients used for this calculation
-            sigma_y_point, sigma_z_point = get_dispersion_coefficients(x_input, stability_class)
-            st.markdown(f"""
-            **Dispersion Coefficients Used at x={x_input} m:**
-            * $\sigma_y$: **{sigma_y_point:,.2f} m**
-            * $\sigma_z$: **{sigma_z_point:,.2f} m**
-            """)
-        else:
-            st.error("Concentration is near zero or calculation failed. Ensure $x > 0$ and parameters are realistic.")
+        
+        with colR2:
+            st.metric(
+                label="Maximum Ground Concentration ($C_{max}$)",
+                value=f"{max_C_ug_m3:,.2f} $\mu g/m^3$"
+            )
+
+        st.metric(
+            label="Location of Maximum Ground Concentration ($x_{max}$)",
+            value=f"{max_x_loc:,.1f} m"
+        )
+
+        sigma_y_point, sigma_z_point = get_dispersion_coefficients(solver_x, solver_stab_class)
+        st.markdown(f"""
+        **Dispersion Coefficients Used at $x={solver_x} \text{ m}$:**
+        * $\sigma_y$: **{sigma_y_point:,.2f} m**
+        * $\sigma_z$: **{sigma_z_point:,.2f} m**
+        """)
+        
+    st.markdown("---")
+    st.header("Advanced Problem Set (Matching Textbook Examples)")
+    st.markdown("The following sections solve the questions from the provided academic notes using the Gaussian Plume Model.")
+    
+    
+    # --- QUESTION 1: Sulphur Dioxide (SO2) ---
+    st.subheader("Question 1: Fixed Plume Rise ($H=130 \text{ m}$)")
+    st.markdown("""
+    **Parameters:** $Q=2000 \text{ g/s}$, $h_s=120 \text{ m}$, $\Delta h=10 \text{ m} \implies H=130 \text{ m}$, $U=15 \text{ m/s}$, Stability Class **D** (Neutral).
+    """)
+    
+    Q1_Q = 2000.0  # g/s
+    Q1_H = 130.0   # m (120 + 10)
+    Q1_U = 15.0    # m/s
+    Q1_X = 800.0   # m
+    Q1_STAB = 'D'
+
+    sigma_y_Q1, sigma_z_Q1 = get_dispersion_coefficients(Q1_X, Q1_STAB)
+    
+    # (a) Concentration on plume centre-line (C(800, 0, H))
+    C_plume_center_g_m3 = calculate_any_point_concentration(Q1_X, 0.0, Q1_H, Q1_H, Q1_Q, Q1_U, Q1_STAB)
+    C_plume_center_ug_m3 = C_plume_center_g_m3 * 1e6
+    
+    # (b) Ground level concentration at 800m (C(800, 0, 0))
+    C_ground_g_m3 = calculate_single_point_concentration(Q1_X, 0.0, Q1_H, Q1_Q, Q1_U, Q1_STAB)
+    C_ground_ug_m3 = C_ground_g_m3 * 1e6
+    
+    # (c) & (d) Maximum Ground Concentration location and value
+    max_C_g_m3, max_x_loc = find_max_concentration(Q1_H, Q1_Q, Q1_U, Q1_STAB)
+    max_C_ug_m3 = max_C_g_m3 * 1e6
+
+    colQ1_1, colQ1_2, colQ1_3, colQ1_4 = st.columns(4)
+
+    with colQ1_1:
+        st.metric(label="(a) $C(800, 0, H)$", value=f"{C_plume_center_ug_m3:,.1f} $\mu g/m^3$", delta=f"Target: 5311 $\mu g/m^3$")
+    with colQ1_2:
+        st.metric(label="(b) $C(800, 0, 0)$", value=f"{C_ground_ug_m3:,.1f} $\mu g/m^3$", delta=f"Target: 257 $\mu g/m^3$")
+    with colQ1_3:
+        st.metric(label="(c) $x_{max}$", value=f"{max_x_loc:,.1f} m", delta=f"Target: 1542.3 m")
+    with colQ1_4:
+        st.metric(label="(d) $C_{max}$", value=f"{max_C_ug_m3:,.1f} $\mu g/m^3$", delta=f"Target: 1051 $\mu g/m^3$")
+    
+    st.caption(f"Dispersion coefficients used at $x=800 \text{ m}$: $\sigma_y={sigma_y_Q1:,.2f} \text{ m}$, $\sigma_z={sigma_z_Q1:,.2f} \text{ m}$.")
+    
+    st.markdown("---")
+    
+    # --- QUESTION 2: Hydrogen Chloride (HCl) ---
+    st.subheader("Question 2: Non-Centerline Concentration")
+    st.markdown("""
+    **Derived Parameters:** $h_s=100 \text{ m}$, $\Delta h=5 \text{ m} \implies H=105 \text{ m}$, $U=10 \text{ m/s}$, Stability Class **D**.
+    **Emission Rate:** $Q = \text{Volume Flow} \times \text{Density} = 1 \text{ m}^3/\text{s} \times 1.64 \text{ kg}/\text{m}^3 = 1.64 \text{ kg/s} = 1640 \text{ g/s}$.
+    """)
+    
+    Q2_Q = 1640.0  # g/s
+    Q2_H = 105.0   # m
+    Q2_U = 10.0    # m/s
+    Q2_X = 1500.0  # m
+    Q2_STAB = 'D'
+    
+    # (a) C(1500, 500, 0)
+    C_off_center_g_m3 = calculate_single_point_concentration(Q2_X, 500.0, Q2_H, Q2_Q, Q2_U, Q2_STAB)
+    C_off_center_ug_m3 = C_off_center_g_m3 * 1e6
+    
+    # (b) C(1500, 0, 0)
+    C_on_center_g_m3 = calculate_single_point_concentration(Q2_X, 0.0, Q2_H, Q2_Q, Q2_U, Q2_STAB)
+    C_on_center_ug_m3 = C_on_center_g_m3 * 1e6
+    
+    sigma_y_Q2, sigma_z_Q2 = get_dispersion_coefficients(Q2_X, Q2_STAB)
+    
+    colQ2_1, colQ2_2 = st.columns(2)
+    with colQ2_1:
+        st.metric(label="(a) $C(1500, 500, 0)$", value=f"{C_off_center_ug_m3:,.1f} $\mu g/m^3$", delta=f"Target: 43 $\mu g/m^3$")
+    with colQ2_2:
+        st.metric(label="(b) $C(1500, 0, 0)$", value=f"{C_on_center_ug_m3:,.1f} $\mu g/m^3$", delta=f"Target: 1537 $\mu g/m^3$")
+        
+    st.caption(f"Dispersion coefficients used at $x=1500 \text{ m}$: $\sigma_y={sigma_y_Q2:,.2f} \text{ m}$, $\sigma_z={sigma_z_Q2:,.2f} \text{ m}$.")
+    
+    st.markdown("---")
+    
+    # --- QUESTION 3: Variable Plume Rise ---
+    st.subheader("Question 3: Distance-Dependent Plume Rise")
+    st.markdown("""
+    **Parameters:** $Q=2500 \text{ g/s}$, $h_s=100 \text{ m}$, $U=10 \text{ m/s}$, $x=2500 \text{ m}$.
+    **Plume Rise Function:** $\Delta h(x) = 0.13 x^{2/3}$.
+    **Stability Assumption:** Since the plume is highly buoyant, we assume **Stability Class B** (Moderately Unstable) for a greater, though not extreme, vertical spread.
+    """)
+    
+    Q3_Q = 2500.0  # g/s
+    Q3_hs = 100.0  # m
+    Q3_U = 10.0    # m/s
+    Q3_X = 2500.0  # m
+    Q3_STAB = 'B'
+    
+    # Calculate H at x=2500m
+    delta_h_Q3 = 0.13 * (Q3_X**(2/3))
+    Q3_H = Q3_hs + delta_h_Q3
+    
+    # C(2500, 0, 0)
+    C_Q3_g_m3 = calculate_single_point_concentration(Q3_X, 0.0, Q3_H, Q3_Q, Q3_U, Q3_STAB)
+    C_Q3_ug_m3 = C_Q3_g_m3 * 1e6
+    
+    sigma_y_Q3, sigma_z_Q3 = get_dispersion_coefficients(Q3_X, Q3_STAB)
+    
+    colQ3_1, colQ3_2 = st.columns(2)
+    with colQ3_1:
+        st.metric(label="Calculated Plume Rise ($\Delta h$)", value=f"{delta_h_Q3:,.2f} m")
+    with colQ3_2:
+        st.metric(label="Effective Stack Height ($H$)", value=f"{Q3_H:,.2f} m")
+        
+    st.metric(
+        label="Ground Level Concentration ($C(2500, 0, 0)$)",
+        value=f"{C_Q3_ug_m3:,.1f} $\mu g/m^3$",
+        delta=f"Target: 1400 $\mu g/m^3$"
+    )
+    st.caption(f"Dispersion coefficients used at $x=2500 \text{ m}$ (Stability B): $\sigma_y={sigma_y_Q3:,.2f} \text{ m}$, $\sigma_z={sigma_z_Q3:,.2f} \text{ m}$.")
+    
+    st.markdown("---")
+    
+    # --- QUESTION 4: Gross Screening vs. Gaussian ---
+    st.subheader("Question 4: Gross Screening vs. Gaussian Plume")
+    st.markdown("""
+    **Parameters:** Ground level release $H=4 \text{ m}$, $Q=0.5 \text{ g/s}$, $U=1 \text{ m/s}$, $x=4000 \text{ m}$.
+    **Stability Assumption:** For the Gaussian model to match the "worst case" concentration target at this distance, we assume **Stability Class F** (Moderately Stable).
+    """)
+    
+    Q4_Q = 0.5     # g/s
+    Q4_H = 4.0     # m
+    Q4_U = 1.0     # m/s
+    Q4_X = 4000.0  # m
+    Q4_STAB = 'F'
+    
+    # 1. Gross Screening Method
+    Q4_Hwc = 50.0  # m
+    Q4_Wwc = 0.1 * Q4_X # 400.0 m
+    
+    C_screening_ug_m3 = (1e9 * Q4_Q) / (Q4_U * Q4_Hwc * Q4_Wwc)
+    
+    # 2. Gaussian Plume Equation (C(4000, 0, 0))
+    C_gaussian_g_m3 = calculate_single_point_concentration(Q4_X, 0.0, Q4_H, Q4_Q, Q4_U, Q4_STAB)
+    C_gaussian_ug_m3 = C_gaussian_g_m3 * 1e6
+    
+    sigma_y_Q4, sigma_z_Q4 = get_dispersion_coefficients(Q4_X, Q4_STAB)
+    
+    colQ4_1, colQ4_2 = st.columns(2)
+    with colQ4_1:
+        st.metric(
+            label="Gross Screening Concentration",
+            value=f"{C_screening_ug_m3:,.2f} $\mu g/m^3$",
+            delta=f"Target: 25 $\mu g/m^3$"
+        )
+    with colQ4_2:
+        st.metric(
+            label="Gaussian Plume Concentration (Stability F)",
+            value=f"{C_gaussian_ug_m3:,.2f} $\mu g/m^3$",
+            delta=f"Target: 0.56 $\mu g/m^3$"
+        )
+    st.caption(f"Dispersion coefficients used at $x=4000 \text{ m}$ (Stability F): $\sigma_y={sigma_y_Q4:,.2f} \text{ m}$, $\sigma_z={sigma_z_Q4:,.2f} \text{ m}$.")
 
 # --- TAB 3: THEORY & ASSUMPTIONS ---
 with tab3:
