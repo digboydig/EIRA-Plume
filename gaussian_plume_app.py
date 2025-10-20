@@ -278,7 +278,7 @@ with tab1:
 # --- TAB 2: PROBLEM SOLVER ---
 with tab2:
     st.header("Point Concentration & $x_{max}$ Solver (Custom Inputs)")
-    st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters** independent of the visualizer's sidebar.")
+    st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters**")
     
     # --- CUSTOM INPUTS FOR THE SOLVER ---
     colA, colB, colC = st.columns(3)
