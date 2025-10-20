@@ -15,12 +15,12 @@ SIGMA_COEFFS = {
     # Sigma_y coefficients (Lateral Dispersion)
     'y': {
         'A': [0.22, 0.16, 0.11, 0.08, 0.06, 0.04],  # A to F
-        'B': [0.90, 0.90, 0.90, 0.90, 0.90, 0.90]   # Simplified, constant exponent
+        'B': [0.90, 0.90, 0.90, 0.90, 0.90, 0.90]  # Simplified, constant exponent
     },
     # Sigma_z coefficients (Vertical Dispersion)
     'z': {
         'A': [0.20, 0.12, 0.08, 0.06, 0.03, 0.016], # A to F
-        'B': [1.00, 1.00, 1.00, 1.00, 1.00, 1.00]   # Simplified, constant exponent
+        'B': [1.00, 1.00, 1.00, 1.00, 1.00, 1.00]  # Simplified, constant exponent
     },
     # Mapping stability class to index for coefficient lookup
     'index': {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5}
@@ -121,7 +121,7 @@ def find_max_concentration(H, Q, U, stability_class):
     return max_C, max_x
 
 def calculate_single_point_concentration(x, y, H, Q, U, stability_class):
-    """Calculates the concentration C(x, y, 0) at a single specified point (scalar inputs)."""
+    """Calculates the concentration C(x, y, 0) at a single specified ground-level point (scalar inputs)."""
     if x <= 0:
         return 0.0
 
@@ -133,16 +133,49 @@ def calculate_single_point_concentration(x, y, H, Q, U, stability_class):
     # 1. Crosswind (y) term
     exp_y = np.exp(-y**2 / (2 * sigma_y**2))
     
-    # 2. Vertical (z) term (ground reflection)
-    exp_z = np.exp(-H**2 / (2 * sigma_z**2))
+    # 2. Vertical (z=0) term (ground reflection)
+    exp_z_ground = np.exp(-H**2 / (2 * sigma_z**2))
     
     # 3. Scaling Factor
     scaling_factor = Q / (np.pi * U * sigma_y * sigma_z)
     
     # Total concentration (g/m^3)
-    C = scaling_factor * exp_y * exp_z
+    C = scaling_factor * exp_y * exp_z_ground
     
     return C
+
+# --- NEW FUNCTION FOR ARBITRARY Z (THE PRIMARY CORRECTION) ---
+def calculate_any_point_concentration(x, y, z, H, Q, U, stability_class):
+    """
+    Calculates the concentration C(x, y, z) at a single specified point (scalar inputs)
+    using the full Gaussian Plume Equation.
+    """
+    if x <= 0:
+        return 0.0
+
+    sigma_y, sigma_z = get_dispersion_coefficients(x, stability_class)
+
+    if sigma_y == 0 or sigma_z == 0:
+        return 0.0
+
+    # 1. Crosswind (y) term
+    exp_y = np.exp(-y**2 / (2 * sigma_y**2))
+    
+    # 2. Vertical (z) term (real source + virtual image source)
+    # The term in the full equation is: exp(-(z-H)^2 / (2*sigma_z^2)) + exp(-(z+H)^2 / (2*sigma_z^2))
+    exp_z_real = np.exp(-(z - H)**2 / (2 * sigma_z**2))
+    exp_z_image = np.exp(-(z + H)**2 / (2 * sigma_z**2))
+    
+    # 3. Scaling Factor
+    # Note the factor of 0.5 compared to the C(x,y,0) simplified equation
+    scaling_factor = Q / (2 * np.pi * U * sigma_y * sigma_z)
+    
+    # Total concentration (g/m^3)
+    C = scaling_factor * exp_y * (exp_z_real + exp_z_image)
+    
+    return C
+# -----------------------------------------------------------------
+
 
 # --- 3. STREAMLIT APP LAYOUT (MAIN PAGE) ---
 
@@ -309,6 +342,7 @@ with tab2:
         st.subheader("Calculated Results")
         
         # 1. Calculate Concentration at the specified point (x, y, z)
+        # CORRECTION: Replaced calculate_any_point_concentration with the new function.
         point_C_g_m3 = calculate_any_point_concentration(solver_x, solver_y, solver_z, solver_H, solver_Q, solver_U, solver_stab_class)
         point_C_ug_m3 = point_C_g_m3 * 1e6
         
@@ -365,6 +399,7 @@ with tab2:
     sigma_y_Q1, sigma_z_Q1 = get_dispersion_coefficients(Q1_X, Q1_STAB)
     
     # (a) Concentration on plume centre-line (C(800, 0, H))
+    # NOTE: Using the new, more general function for arbitrary z
     C_plume_center_g_m3 = calculate_any_point_concentration(Q1_X, 0.0, Q1_Z_centerline, Q1_H, Q1_Q, Q1_U, Q1_STAB)
     C_plume_center_ug_m3 = C_plume_center_g_m3 * 1e6
     
@@ -469,7 +504,7 @@ with tab2:
     **Parameters:** Ground level release $H=4 \text{ m}$, $Q=0.5 \text{ g/s}$, $U=1 \text{ m/s}$, $x=4000 \text{ m}$.
     **Stability Assumption:** For the Gaussian model to show a reasonable 'worst case' near the target, we use **Stability Class F** (Moderately Stable), which minimizes vertical mixing.
     
-    **Gross Screening Formula:** $C_{wc} = \\frac{10^9 Q}{U H_{wc} W_{wc}}$, where $H_{wc}=50 \text{ m}$ and $W_{wc}=0.1x$.
+    **Gross Screening Formula:** $C_{wc} = \frac{10^9 Q}{U H_{wc} W_{wc}}$, where $H_{wc}=50 \text{ m}$ and $W_{wc}=0.1x$.
     """)
     
     Q4_Q = 0.5     # g/s
@@ -515,7 +550,7 @@ with tab3:
 
     ---
     
-    ### Additional Resource:  
+    ### Additional Resource: 
     
     For further study and reference on Environmental Engineering and dispersion modeling, you may consult the work and class notes of:
     
@@ -542,7 +577,7 @@ with tab3:
     For ground-level concentrations ($z=0$), the total concentration $C(x, y, 0)$ is the sum of the concentration from the real source and its virtual image source. The simplified equation is:
     
     $$
-    C(x, y, 0) = \\frac{Q}{\pi U \sigma_y \sigma_z} \exp\\left(-\\frac{y^2}{2\sigma_y^2}\\right) \exp\\left(-\\frac{H^2}{2\sigma_z^2}\\right)
+    C(x, y, 0) = \frac{Q}{\pi U \sigma_y \sigma_z} \exp\left(-\frac{y^2}{2\sigma_y^2}\right) \exp\left(-\frac{H^2}{2\sigma_z^2}\right)
     $$
     
     Where:
@@ -563,7 +598,7 @@ with tab3:
     The model uses power law approximations ($\sigma = A \cdot x^B$) where $A$ and $B$ are constants derived from the chosen Pasquill stability class.
 
 
-     ---
+    ---
 
     ###### Application Development
     
