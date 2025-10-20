@@ -415,9 +415,11 @@ with tab3:
     ### Core Ground-Level Equation
     For ground-level concentrations ($z=0$), the total concentration $C(x, y, 0)$ is the sum of the concentration from the real source and its virtual image source. The simplified equation is:
     
+    st.markdown("""
     $$
     C(x, y, 0) = \frac{Q}{\pi U \sigma_y \sigma_z} \exp\left(-\frac{y^2}{2\sigma_y^2}\right) \exp\left(-\frac{H^2}{2\sigma_z^2}\right)
     $$
+    """)
     
     Where:
     * $C(x, y, 0)$: Ground-level concentration ($\mu g/m^3$)
