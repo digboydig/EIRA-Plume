@@ -217,7 +217,7 @@ tab1, tab2, tab3 = st.tabs(["Plume Visualizer", "Problem Solver", "Theory & Assu
 
 # --- TAB 1: PLUME VISUALIZER (single-column layout) ---
 with tab1:
-    st.header("Plume Concentration Contour Map")
+    st.subheader("Plume Concentration Contour Map")
 
     # --- Visualization domain ---
     X_MAX = 4000  # meters downwind
