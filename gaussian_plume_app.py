@@ -382,69 +382,64 @@ with tab2:
 # --- TAB 3: THEORY & ASSUMPTIONS ---
 with tab3:
     st.header("Gaussian Plume Model Theory & Assumptions")
-    
+
     st.markdown(
         """
-    ***Primary Source Reference:*** *These notes are adapted from the lecture materials on Gaussian Plumes by E. Savory, available at [eng.uwo.ca/people/esavory/gaussian plumes.pdf](https://www.eng.uwo.ca/people/esavory/gaussian%20plumes.pdf)*.)
+        ***Primary Source Reference:*** *These notes are adapted from the lecture materials on Gaussian Plumes by E. Savory, available at [eng.uwo.ca/people/esavory/gaussian plumes.pdf](https://www.eng.uwo.ca/people/esavory/gaussian%20plumes.pdf).*
 
-    ---
-    
-    ### Additional Resource: 
-    
-    For further study and reference on Environmental Engineering and dispersion modeling, you may consult the work and class notes of:
-    
-    **Dr. Abhradeep Majumder, Ph.D.**
-    * Assistant Professor, Department of Civil Engineering, BITS Pilani-Hyderabad Campus
-    * Academic Profiles:
-        * Scopus: [https://www.scopus.com/authid/detail.uri?authorId=57191504507](https://www.scopus.com/authid/detail.uri?authorId=57191504507)
-        * ORCID: [https://orcid.org/0000-0002-0186-6450](https://orcid.org/0000-0002-0186-6450)
-        * Google Scholar: [https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao](https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao)
-        * LinkedIn: [linkedin.com/in/abhradeep-majumder-36503777/](https://linkedin.com/in/abhradeep-majumder-36503777/)
-        
-    ---
-    
+        ---
 
-    The Gaussian Plume Model (GPM) is the fundamental steady-state model for predicting the dispersion of continuous, buoyant pollutants released from a single point source, such as a chimney stack. It assumes that the pollutant concentration forms a Gaussian (normal) distribution in both the lateral ($y$) and vertical ($z$) directions, normal to the mean wind direction ($x$).
-    
-    ### Key Assumptions
-    1.  **Steady State:** Emission rate ($Q$) and wind speed ($U$) are constant.
-    2.  **Uniform Wind:** Wind flows uniformly in the $x$-direction.
-    3.  **Total Reflection:** The pollutant is completely reflected off the ground surface (a virtual "mirror image" source is used).
-    4.  **Gaussian Distribution:** Concentration profiles are Gaussian in the cross-wind and vertical directions.
-    
-    ### Core Ground-Level Equation
-    For ground-level concentrations ($z=0$), the total concentration $C(x, y, 0)$ is the sum of the concentration from the real source and its virtual image source. The simplified equation is:
-    
-    st.markdown("""
-    $$
-    C(x, y, 0) = \frac{Q}{\pi U \sigma_y \sigma_z} \exp\left(-\frac{y^2}{2\sigma_y^2}\right) \exp\left(-\frac{H^2}{2\sigma_z^2}\right)
-    $$
+        ### Additional Resource:
+
+        For further study and reference on Environmental Engineering and dispersion modeling, you may consult the work and class notes of:
+
+        **Dr. Abhradeep Majumder, Ph.D.**
+        * Assistant Professor, Department of Civil Engineering, BITS Pilani-Hyderabad Campus
+        * Academic Profiles:
+            * Scopus: https://www.scopus.com/authid/detail.uri?authorId=57191504507
+            * ORCID: https://orcid.org/0000-0002-0186-6450
+            * Google Scholar: https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao
+            * LinkedIn: https://linkedin.com/in/abhradeep-majumder-36503777/
+
+        ---
+
+        The Gaussian Plume Model (GPM) is the fundamental steady-state model for predicting the dispersion of continuous, buoyant pollutants released from a single point source, such as a chimney stack. It assumes that the pollutant concentration forms a Gaussian (normal) distribution in both the lateral ($y$) and vertical ($z$) directions, normal to the mean wind direction ($x$).
+
+        ### Key Assumptions
+        1.  **Steady State:** Emission rate ($Q$) and wind speed ($U$) are constant.
+        2.  **Uniform Wind:** Wind flows uniformly in the $x$-direction.
+        3.  **Total Reflection:** The pollutant is completely reflected off the ground surface (a virtual "mirror image" source is used).
+        4.  **Gaussian Distribution:** Concentration profiles are Gaussian in the cross-wind and vertical directions.
+
+        ### Core Ground-Level Equation
+        For ground-level concentrations ($z=0$), the total concentration $C(x, y, 0)$ is the sum of the concentration from the real source and its virtual image source. The simplified equation is shown below.
+        """
+    )
+
+    # Render the equation cleanly using Streamlit's latex renderer
+    st.latex(r"""
+    C(x, y, 0) \;=\; \frac{Q}{\pi \, U \, \sigma_y \, \sigma_z}
+    \exp\!\left(-\frac{y^2}{2\sigma_y^2}\right)
+    \exp\!\left(-\frac{H^2}{2\sigma_z^2}\right)
     """)
-    
-    Where:
-    * $C(x, y, 0)$: Ground-level concentration ($\mu g/m^3$)
-    * $Q$: Source Emission Rate ($g/s$)
-    * $U$: Mean Wind Speed ($m/s$)
-    * $H$: **Effective Stack Height** ($m$) - Sum of physical stack height and plume rise ($\Delta h$).
-    * $\sigma_y$ and $\sigma_z$: Lateral and Vertical Dispersion Coefficients ($m$)
-    
-    ### Dispersion Coefficients ($\sigma_y$ and $\sigma_z$)
-    These coefficients represent the standard deviations of the Gaussian distributions in the cross-wind and vertical directions, respectively. Their values are empirical (experimentally derived) and depend heavily on two main factors:
-    1.  **Downwind Distance ($x$):** The plume spreads as it travels, so $\sigma_y$ and $\sigma_z$ increase with $x$.
-    2.  **Atmospheric Stability Class (A-F):** This is the most crucial parameter.
-        * **Unstable (A, B, C):** Characterized by high turbulence (e.g., sunny day). $\sigma_y$ and $\sigma_z$ are large, leading to rapid mixing and a plume that "touches down" quickly.
-        * **Neutral (D):** Moderate mixing (e.g., overcast day, high wind).
-        * **Stable (E, F):** Characterized by low turbulence (e.g., clear night). $\sigma_z$ is very small, leading to poor vertical mixing and a narrow plume that travels far downwind before reaching maximum ground concentration.
 
-    The model uses power law approximations ($\sigma = A \cdot x^B$) where $A$ and $B$ are constants derived from the chosen Pasquill stability class.
+    st.markdown(
+        """
+        Where:
+        * $C(x, y, 0)$: Ground-level concentration ($\mu g/m^3$)
+        * $Q$: Source Emission Rate ($g/s$)
+        * $U$: Mean Wind Speed ($m/s$)
+        * $H$: **Effective Stack Height** ($m$) - Sum of physical stack height and plume rise ($\Delta h$).
+        * $\sigma_y$ and $\sigma_z$: Lateral and Vertical Dispersion Coefficients ($m$)
 
+        ### Dispersion Coefficients ($\sigma_y$ and $\sigma_z$)
+        These coefficients represent the standard deviations of the Gaussian distributions in the cross-wind and vertical directions, respectively. Their values are empirical and depend on:
+        1.  **Downwind Distance ($x$)** — plume spreads with distance.
+        2.  **Atmospheric Stability Class (A–F)** — governs turbulence and mixing rates.
 
-    ---
+        ---
+        ###### Application Development
 
-    ###### Application Development
-    
-    This interactive Gaussian Plume Dispersion Model application was developed by **Subodh Purohit** to provide a dynamic, educational tool for exploring pollutant spread based on atmospheric and source conditions.
-
-    ---
-
-    """)
+        This interactive Gaussian Plume Dispersion Model application was developed by **Subodh Purohit** as an educational tool.
+        """
+    )
