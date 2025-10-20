@@ -215,102 +215,86 @@ st.sidebar.markdown('<p style="font-size: 11px; color: grey;">Developed by: <b>S
 # --- TABS CONTAINER ---
 tab1, tab2, tab3 = st.tabs(["Plume Visualizer", "Problem Solver", "Theory & Assumptions"])
 
-# --- TAB 1: PLUME VISUALIZER ---
+# --- TAB 1: PLUME VISUALIZER (single-column layout) ---
 with tab1:
-    col1, col2 = st.columns([3, 2])
+    st.header("Plume Concentration Contour Map")
 
-    with col1:
-        st.header("Plume Concentration Contour Map")
+    # --- Visualization domain ---
+    X_MAX = 4000  # meters downwind
+    Y_MAX = 500   # meters crosswind (half-width, total 1000m)
 
-        # Define the domain for visualization
-        X_MAX = 4000  # meters downwind
-        Y_MAX = 500   # meters crosswind (half-width, total 1000m)
-        
-        # Create meshgrid for X and Y coordinates
-        x_range = np.linspace(0, X_MAX, 200)
-        y_range = np.linspace(-Y_MAX, Y_MAX, 100)
-        X, Y = np.meshgrid(x_range, y_range)
+    # Create meshgrid for X and Y coordinates
+    x_range = np.linspace(0.0, X_MAX, 200)
+    y_range = np.linspace(-Y_MAX, Y_MAX, 100)
+    X, Y = np.meshgrid(x_range, y_range)
 
-        # Calculate concentrations (C in g/m^3)
-        C_values = gaussian_plume_model(X, Y, H_m, Q_g_s, U_m_s, stability_class)
+    # Calculate concentrations (C in g/m^3)
+    C_values = gaussian_plume_model(X, Y, H_m, Q_g_s, U_m_s, stability_class)
 
-        # Convert to micrograms per cubic meter (μg/m^3) for better scale display
-        C_ug_m3 = C_values * 1e6
-        
-        # Ensure there is data to plot before proceeding
-        if np.max(C_ug_m3) > 1e-6:
+    # Convert to micrograms per cubic meter (μg/m^3) for display
+    C_ug_m3 = C_values * 1e6
 
-            # --- PLOTTING ---
-            fig, ax = plt.subplots(figsize=(10, 5))
-            
-            # Use log scale for contours to better show the edges of the plume
-            levels = np.linspace(0, np.max(C_ug_m3), 15)
-            
-            # Plot the contour map
-            c = ax.contourf(X, Y, C_ug_m3, levels=levels, cmap='jet')
-            
-            # Add a color bar
-            cbar = fig.colorbar(c, ax=ax, label=r'Concentration ($C(x,y,0)$ in $\mu g/m^3$)')
-            
-            # Plot center-line and source location
-            ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
-            ax.plot([0], [0], 'ro', markersize=8, label='Stack Location (x=0, y=0)')
-            
-            # Set titles and labels
-            ax.set_title(f'Ground-Level Concentration Map (Stability: {stability_class}, H: {H_m}m)')
-            ax.set_xlabel('Downwind Distance ($x$, m)')
-            ax.set_ylabel('Crosswind Distance ($y$, m)')
-            ax.set_xlim(0, X_MAX)
-            ax.set_ylim(-Y_MAX, Y_MAX)
-            ax.legend(loc='upper right')
-            ax.grid(linestyle=':', alpha=0.5)
-            
-            st.pyplot(fig)
-        else:
-            st.warning("The calculated concentration is near zero. Please adjust parameters (e.g., lower H, increase Q, or select a more unstable class).")
+    # Plot (or warn if near-zero)
+    if np.nanmax(C_ug_m3) > 1e-9:
+        fig, ax = plt.subplots(figsize=(10, 5))
 
-    with col2:
-        st.header("Key Model Findings")
-        
-        # 1. Calculate Max Concentration
-        max_C_g_m3, max_x = find_max_concentration(H_m, Q_g_s, U_m_s, stability_class)
-        max_C_ug_m3 = max_C_g_m3 * 1e6
-        
-        # Max Concentration Metric
-        st.metric(
-            label="Max Ground Concentration (on center-line)",
-            value=f"{max_C_ug_m3:,.2f}"
-        )
-        st.markdown(r"**Units:** $\mu g/m^3$") 
+        vmax = float(np.nanmax(C_ug_m3))
+        vmin = 0.0
+        # avoid degenerate levels
+        levels = np.linspace(vmin, vmax if vmax > vmin else vmin + 1e-9, 15)
 
-        st.metric(
-            label="Downwind Distance of Max Concentration ($x_{max}$)",
-            value=f"{max_x:,.0f} m"
-        )
+        # contour plot
+        c = ax.contourf(X, Y, C_ug_m3, levels=levels)
+        cbar = fig.colorbar(c, ax=ax, label=r'Concentration ($C(x,y,0)$ in $\mu g/m^3$)')
 
-        # 2. Calculate Plume Dimensions at max_x
-        if max_x > 0:
-            sigma_y_max_x, sigma_z_max_x = get_dispersion_coefficients(max_x, stability_class)
-            
-            st.markdown(f"### Plume Dimensions (at $x={int(max_x)}$ m)")
-            
-            # Plume Half-Width (y)
-            st.metric(
-                label="Plume Half-Width ($2\sigma_y$)",
-                value=f"{2 * sigma_y_max_x:,.1f} m"
-            )
+        # center-line and source marker
+        ax.axhline(0.0, color='gray', linestyle='--', linewidth=0.6)
+        ax.plot([0.0], [0.0], 'ro', markersize=7, label='Stack (x=0, y=0)')
 
-            # Plume Height (z)
-            st.metric(
-                label="Plume Mixing Height ($4.3\sigma_z$ from ground)",
-                value=f"{4.3 * sigma_z_max_x:,.1f} m"
-            )
-        else:
-            st.info("Plume maximum could not be calculated. Ensure H is not too large or Q is not too small.")
+        # labels and styling
+        ax.set_title(f'Ground-Level Concentration Map (Stability: {stability_class}, H: {H_m} m)')
+        ax.set_xlabel('Downwind Distance (x, m)')
+        ax.set_ylabel('Crosswind Distance (y, m)')
+        ax.set_xlim(0.0, X_MAX)
+        ax.set_ylim(-Y_MAX, Y_MAX)
+        ax.legend(loc='upper right')
+        ax.grid(linestyle=':', alpha=0.5)
+
+        st.pyplot(fig)
+    else:
+        st.warning("The calculated concentration is near zero. Please adjust parameters (e.g., lower H, increase Q, or select a more unstable class).")
+
+    # --- Key model findings (display below the plot) ---
+    st.subheader("Key Model Findings")
+
+    # 1. Max concentration and location
+    max_C_g_m3, max_x = find_max_concentration(H_m, Q_g_s, U_m_s, stability_class)
+    max_C_ug_m3 = max_C_g_m3 * 1e6
+
+    # small row of metrics (still a single main column; metrics are compact)
+    mcol1, mcol2, mcol3 = st.columns([1.2, 1.0, 1.2])
+    with mcol1:
+        st.metric(label="Max Ground Conc. (center-line)", value=f"{max_C_ug_m3:,.2f} µg/m³")
+    with mcol2:
+        st.metric(label="x_max (downwind)", value=f"{max_x:,.0f} m")
+    # compute plume dims if available
+    if max_x > 0:
+        sigma_y_max_x, sigma_z_max_x = get_dispersion_coefficients(max_x, stability_class)
+        with mcol3:
+            st.metric(label="Plume Half-Width (2·σy)", value=f"{2 * sigma_y_max_x:,.1f} m")
+    else:
+        with mcol3:
+            st.metric(label="Plume Half-Width (2·σy)", value="N/A")
+
+    # Additional plume height info and short explanation
+    if max_x > 0:
+        st.markdown(f"**Plume mixing height estimate (4.3·σz) at x = {int(max_x)} m:** {4.3 * sigma_z_max_x:,.1f} m")
+    else:
+        st.info("Plume maximum could not be calculated. Ensure H is not too large or Q is not too small.")
 
 # --- TAB 2: PROBLEM SOLVER ---
 with tab2:
-    st.subheader("Point Concentration & $x_{max}$ Solver (Custom Inputs)")
+    st.subheader("Point Concentration & $x_{max}$ Solver")
     st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters** independent of the visualizer's sidebar.")
 
     # Custom inputs
