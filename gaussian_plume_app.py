@@ -314,6 +314,7 @@ with tab2:
     st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters** independent of the visualizer's sidebar.")
 
     # Custom inputs
+    st.subheader("Source & Atmospheric Parameters")
     colA, colB, colC = st.columns(3)
     with colA:
         solver_Q = st.number_input("1. Emission Rate ($Q$, g/s)", min_value=1.0, value=100.0, step=10.0, key='Q_solver')
@@ -331,7 +332,7 @@ with tab2:
     )
 
     st.markdown("---")
-    st.subheader("5. Point Location Input")
+    st.subheader("Point Location Input")
     colX, colY, colZ = st.columns(3)
     with colX:
         solver_x = st.number_input("Downwind Distance ($x$, m)", min_value=1.0, value=1000.0, step=10.0, key='x_input_solver')
