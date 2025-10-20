@@ -276,19 +276,19 @@ with tab1:
     with mcol1:
         st.metric(label="Max Ground Conc. (center-line)", value=f"{max_C_ug_m3:,.2f} µg/m³")
     with mcol2:
-        st.metric(label="x_max (downwind)", value=f"{max_x:,.0f} m")
+        st.metric(label=r"$x_{max}$ (downwind)", value=f"{max_x:,.0f} m")
     # compute plume dims if available
     if max_x > 0:
         sigma_y_max_x, sigma_z_max_x = get_dispersion_coefficients(max_x, stability_class)
         with mcol3:
-            st.metric(label="Plume Half-Width (2·σy)", value=f"{2 * sigma_y_max_x:,.1f} m")
+            st.metric(label="Plume Half-Width ($2\\sigma_y$)", value=f"{2 * sigma_y_max_x:,.1f} m")
     else:
         with mcol3:
-            st.metric(label="Plume Half-Width (2·σy)", value="N/A")
+            st.metric(label="Plume Half-Width ($2\\sigma_y$)", value="N/A")
 
     # Additional plume height info and short explanation
     if max_x > 0:
-        st.markdown(f"**Plume mixing height estimate (4.3·σz) at x = {int(max_x)} m:** {4.3 * sigma_z_max_x:,.1f} m")
+        st.markdown(f"**Plume mixing height estimate ($4.3\\sigma_z$) at x = {int(max_x)} m:** {4.3 * sigma_z_max_x:,.1f} m")
     else:
         st.info("Plume maximum could not be calculated. Ensure H is not too large or Q is not too small.")
 
