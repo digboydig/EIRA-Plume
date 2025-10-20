@@ -342,7 +342,6 @@ with tab2:
         st.subheader("Calculated Results")
         
         # 1. Calculate Concentration at the specified point (x, y, z)
-        # CORRECTION: Replaced calculate_any_point_concentration with the new function.
         point_C_g_m3 = calculate_any_point_concentration(solver_x, solver_y, solver_z, solver_H, solver_Q, solver_U, solver_stab_class)
         point_C_ug_m3 = point_C_g_m3 * 1e6
         
@@ -387,19 +386,18 @@ with tab2:
     **Parameters:** $Q=2000 \text{ g/s}$, $h_s=120 \text{ m}$, $\Delta h=10 \text{ m} \implies H=130 \text{ m}$, $U=15 \text{ m/s}$, Stability Class **D** (Neutral).
     """)
     
-    Q1_Q = 2000.0  # g/s
+    Q1_Q = 2000.0   # g/s
     Q1_H = 130.0   # m (120 + 10)
     Q1_U = 15.0    # m/s
     Q1_X = 800.0   # m
     Q1_STAB = 'D'
 
-    # Set z = H for part (a) - using a distinct variable to prevent runtime conflicts
+    # Set z = H for part (a) - centerline height
     Q1_Z_centerline = Q1_H 
     
     sigma_y_Q1, sigma_z_Q1 = get_dispersion_coefficients(Q1_X, Q1_STAB)
     
     # (a) Concentration on plume centre-line (C(800, 0, H))
-    # NOTE: Using the new, more general function for arbitrary z
     C_plume_center_g_m3 = calculate_any_point_concentration(Q1_X, 0.0, Q1_Z_centerline, Q1_H, Q1_Q, Q1_U, Q1_STAB)
     C_plume_center_ug_m3 = C_plume_center_g_m3 * 1e6
     
@@ -433,7 +431,7 @@ with tab2:
     **Emission Rate:** $Q = \text{Volume Flow} \times \text{Density} = 1 \text{ m}^3/\text{s} \times 1.64 \text{ kg}/\text{m}^3 = 1.64 \text{ kg/s} = 1640 \text{ g/s}$.
     """)
     
-    Q2_Q = 1640.0  # g/s
+    Q2_Q = 1640.0   # g/s
     Q2_H = 105.0   # m
     Q2_U = 10.0    # m/s
     Q2_X = 1500.0  # m
@@ -467,7 +465,7 @@ with tab2:
     **Stability Assumption:** Since the plume is highly buoyant, we assume **Stability Class B** (Moderately Unstable) for a greater, though not extreme, vertical spread.
     """)
     
-    Q3_Q = 2500.0  # g/s
+    Q3_Q = 2500.0   # g/s
     Q3_hs = 100.0  # m
     Q3_U = 10.0    # m/s
     Q3_X = 2500.0  # m
