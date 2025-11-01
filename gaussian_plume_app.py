@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 
 # --- 1. CONFIGURATION AND MODEL PARAMETERS ---
 
@@ -92,7 +93,7 @@ def gaussian_plume_model(x_m, y_m, z, H, Q, U, stability_class):
             
             # 3. Scaling Factor
             # The full equation has 2*pi in the denominator
-            scaling_factor = Q / (2 * np.pi * U * sigma_y * sigma_z) 
+            scaling_factor = Q / (2 * np.pi * U * sigma_y * sigma_z)
             
             # Total concentration
             C[i, j] = scaling_factor * exp_y * vertical_term
@@ -161,6 +162,40 @@ def calculate_single_point_concentration(x, y, z, H, Q, U, stability_class):
     
     return C
 
+# --- NEW HELPER FUNCTIONS FOR SOLVER TAB (Uses custom sigma values) ---
+
+def calculate_point_concentration_custom_sigma(x, y, z, H, Q, U, sigma_y, sigma_z):
+    """Calculates concentration using explicitly provided sigma values."""
+    if x <= 0 or sigma_y <= 0 or sigma_z <= 0:
+        return 0.0
+        
+    # 1. Crosswind (y) term
+    exp_y = np.exp(-y**2 / (2 * sigma_y**2))
+    
+    # 2. Vertical (z) term (real source + virtual image source)
+    exp_z_real = np.exp(-(z - H)**2 / (2 * sigma_z**2))
+    exp_z_image = np.exp(-(z + H)**2 / (2 * sigma_z**2))
+    vertical_term = exp_z_real + exp_z_image
+    
+    # 3. Scaling Factor
+    scaling_factor = Q / (2 * np.pi * U * sigma_y * sigma_z)
+    
+    # Total concentration (g/m^3)
+    C = scaling_factor * exp_y * vertical_term
+    
+    return C
+
+def find_max_concentration_custom_sigma_fixed_ratio(H, Q, U, stability_class):
+    """
+    Finds the max ground-level concentration.
+    NOTE: We must still rely on the original find_max_concentration as the max_x 
+    calculation depends on the x-dependent Pasquill-Gifford curves, which are 
+    complex to invert for arbitrary sigma values. If custom sigmas are used, 
+    we only calculate the point concentration, not x_max.
+    """
+    # Fallback to the original function to get the max location if needed for comparison
+    return find_max_concentration(H, Q, U, stability_class)
+    
 # --- 3. STREAMLIT APP LAYOUT (MAIN PAGE) ---
 
 st.set_page_config(layout="wide", page_title="Gaussian Plume Visualizer")
@@ -174,26 +209,29 @@ st.sidebar.header("Source & Environment Parameters")
 
 # 1. Emission Parameters
 st.sidebar.subheader("1. Source Strength")
-Q_g_s = st.sidebar.slider("Emission Rate ($Q$, g/s)", 10.0, 500.0, 100.0, step=10.0)
-H_m = st.sidebar.slider("Effective Stack Height ($H$, m)", 10.0, 200.0, 100.0, step=5.0)
+st.sidebar.markdown(r"Emission Rate ($Q$, $\text{g/s}$)") # Use markdown for correct LaTeX rendering
+Q_g_s = st.sidebar.slider("", 10.0, 500.0, 100.0, step=10.0, key='Q_slider')
+st.sidebar.markdown(r"Effective Stack Height ($H$, $\text{m}$)")
+H_m = st.sidebar.slider("", 10.0, 200.0, 100.0, step=5.0, key='H_slider')
 
 # 2. Atmospheric Conditions
 st.sidebar.subheader("2. Atmospheric Conditions")
-U_m_s = st.sidebar.slider("Wind Speed ($U$, m/s)", 1.0, 20.0, 5.0, step=0.5)
+st.sidebar.markdown(r"Wind Speed ($U$, $\text{m/s}$)")
+U_m_s = st.sidebar.slider("", 1.0, 20.0, 5.0, step=0.5, key='U_slider')
 
 stability_options = {'A': 'A - Extremely Unstable', 'B': 'B - Moderately Unstable', 'C': 'C - Slightly Unstable',
                      'D': 'D - Neutral (Overcast/High Wind)', 'E': 'E - Slightly Stable', 'F': 'F - Moderately Stable'}
-stability_class = st.sidebar.selectbox("Atmospheric Stability Class", options=list(stability_options.keys()), format_func=lambda x: stability_options[x], index=3)
+stability_class = st.sidebar.selectbox("Atmospheric Stability Class", options=list(stability_options.keys()), format_func=lambda x: stability_options[x], index=3, key='stability_slider')
 
 # 3. VISUALIZATION TOGGLE (NEW FEATURE)
 st.sidebar.subheader("3. Visualization Plane (z)")
-use_custom_z = st.sidebar.checkbox("Visualize at a Custom Height ($z$)", value=False, help="Toggle to view concentration on a horizontal plane above the ground.")
+use_custom_z = st.sidebar.checkbox(r"Visualize at a Custom Height ($z$)", value=False, help="Toggle to view concentration on a horizontal plane above the ground.")
 
 # Conditional slider for z
 if use_custom_z:
     # Set a maximum reasonable height, maybe up to 1.5 times the stack height
     max_z_limit = max(150.0, H_m * 1.5)
-    Z_RECEPTOR_M = st.sidebar.slider("Receptor Plane Height ($z$, m)", 0.0, max_z_limit, 50.0, step=5.0)
+    Z_RECEPTOR_M = st.sidebar.slider(r"Receptor Plane Height ($z$, $\text{m}$)", 0.0, max_z_limit, 50.0, step=5.0)
 else:
     Z_RECEPTOR_M = 0.0 # Force z=0 when the checkbox is off (standard ground-level)
 
@@ -238,32 +276,48 @@ with tab1:
 
     # Plot (or warn if near-zero)
     if np.nanmax(C_ug_m3) > 1e-9:
-        fig, ax = plt.subplots(figsize=(10, 5))
+        # -----------------------
+        # Interactive Plotly contour (Tab 1)
+        # -----------------------
+        x_plot = x_range
+        y_plot = y_range
+        z_plot = C_ug_m3  # shape matches meshgrid (ny, nx)
 
-        vmax = float(np.nanmax(C_ug_m3))
-        vmin = 0.0
-        # avoid degenerate levels
-        levels = np.linspace(vmin, vmax if vmax > vmin else vmin + 1e-9, 15)
+        fig_tab1 = go.Figure(
+            data=go.Contour(
+                z=z_plot,
+                x=x_plot,
+                y=y_plot,
+                colorscale='Viridis',
+                contours=dict(showlabels=False),
+                colorbar=dict(title="Concentration (µg m⁻³)"),
+                hovertemplate='x: %{x:.1f} m<br>y: %{y:.1f} m<br>C: %{z:.2f} µg m⁻³<extra></extra>'
+            )
+        )
 
-        # contour plot
-        c = ax.contourf(X, Y, C_ug_m3, levels=levels)
-        cbar = fig.colorbar(c, ax=ax, label=r'Concentration ($C(x,y,z)$ in $\mu g/m^3$)')
+        # Add stack marker as scatter
+        fig_tab1.add_trace(
+            go.Scatter(
+                x=[0.0],
+                y=[0.0],
+                mode='markers',
+                marker=dict(color='red', size=7),
+                name='Stack (0,0)',
+                hoverinfo='skip'
+            )
+        )
 
-        # center-line and source marker
-        ax.axhline(0.0, color='gray', linestyle='--', linewidth=0.6)
-        ax.plot([0.0], [0.0], 'ro', markersize=7, label='Stack (x=0, y=0)')
-
-        # labels and styling
         plot_title = f'Concentration Map at z={Z_RECEPTOR_M} m (Stability: {stability_class}, H: {H_m} m)'
-        ax.set_title(plot_title)
-        ax.set_xlabel('Downwind Distance (x, m)')
-        ax.set_ylabel('Crosswind Distance (y, m)')
-        ax.set_xlim(0.0, X_MAX)
-        ax.set_ylim(-Y_MAX, Y_MAX)
-        ax.legend(loc='upper right')
-        ax.grid(linestyle=':', alpha=0.5)
+        fig_tab1.update_layout(
+            title=plot_title,
+            xaxis_title='Downwind Distance (x, m)',
+            yaxis_title='Crosswind Distance (y, m)',
+            autosize=True,
+            margin=dict(l=40, r=20, t=50, b=40)
+        )
 
-        st.pyplot(fig)
+        st.plotly_chart(fig_tab1, use_container_width=True)
+
     else:
         st.warning(f"The calculated concentration at $z={Z_RECEPTOR_M}$ m is near zero. The plume may be passing above or below this height, or parameters result in high dilution.")
 
@@ -278,6 +332,7 @@ with tab1:
     # small row of metrics
     mcol1, mcol2, mcol3 = st.columns([1.2, 1.0, 1.2])
     with mcol1:
+        # FINAL FIX: Simplified Mathtext notation for st.metric label
         st.metric(label="Max Ground Conc. (center-line)", value=f"{max_C_ug_m3:,.2f} µg/m³")
     with mcol2:
         st.metric(label=r"$x_{max}$ (downwind)", value=f"{max_x:,.0f} m")
@@ -302,26 +357,51 @@ with tab2:
     st.subheader("Point Concentration & $x_{max}$ Solver")
     st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters** independent of the visualizer's sidebar.")
 
-    # Custom inputs
-    st.subheader("Source & Atmospheric Parameters")
+    # 1. Dispersion Mode Selection
+    st.subheader("1. Dispersion Mode")
+    dispersion_mode = st.radio(
+        "Choose Dispersion Coefficient Source:",
+        ('Pasquill-Gifford Curves (default)', 'Custom $\\sigma_y$ and $\\sigma_z$ Input'),
+        index=0,
+        key='dispersion_mode'
+    )
+    
+    # Custom Sigma Inputs
+    use_custom_sigma = (dispersion_mode == 'Custom $\\sigma_y$ and $\\sigma_z$ Input')
+
+    if use_custom_sigma:
+        st.warning("When using custom $\\sigma$ values, the maximum concentration ($x_{max}$) calculation is not meaningful as $\\sigma$ is fixed, not distance-dependent.")
+        colS1, colS2 = st.columns(2)
+        with colS1:
+            solver_sigma_y = st.number_input("Custom $\\sigma_y$ (Lateral, m)", min_value=0.1, value=100.0, step=10.0, key='sigma_y_solver')
+        with colS2:
+            solver_sigma_z = st.number_input("Custom $\\sigma_z$ (Vertical, m)", min_value=0.1, value=50.0, step=5.0, key='sigma_z_solver')
+    
+    # 2. Source and Atmosphere Parameters
+    st.subheader("2. Source & Atmospheric Parameters")
     colA, colB, colC = st.columns(3)
     with colA:
-        solver_Q = st.number_input("1. Emission Rate ($Q$, g/s)", min_value=1.0, value=100.0, step=10.0, key='Q_solver')
+        solver_Q = st.number_input("Emission Rate ($Q$, g/s)", min_value=1.0, value=100.0, step=10.0, key='Q_solver')
     with colB:
-        solver_H = st.number_input("2. Effective Stack Height ($H$, m)", min_value=1.0, value=100.0, step=5.0, key='H_solver')
+        solver_H = st.number_input("Effective Stack Height ($H$, m)", min_value=1.0, value=100.0, step=5.0, key='H_solver')
     with colC:
-        solver_U = st.number_input("3. Wind Speed ($U$, m/s)", min_value=0.1, value=5.0, step=0.5, key='U_solver')
+        solver_U = st.number_input("Wind Speed ($U$, m/s)", min_value=0.1, value=5.0, step=0.5, key='U_solver')
 
-    solver_stab_class = st.selectbox(
-        "4. Atmospheric Stability Class",
-        options=list(stability_options.keys()),
-        format_func=lambda x: stability_options[x],
-        index=3,
-        key='stability_solver_key'
-    )
+    # Stability class is only needed if using Pasquill-Gifford curves
+    if not use_custom_sigma:
+        solver_stab_class = st.selectbox(
+            "4. Atmospheric Stability Class",
+            options=list(stability_options.keys()),
+            format_func=lambda x: stability_options[x],
+            index=3,
+            key='stability_solver_key'
+        )
+    else:
+        # Placeholder for stability class if custom sigma is used (required for original x_max finder)
+        solver_stab_class = 'D' # Default to D if custom is selected
 
     st.markdown("---")
-    st.subheader("Point Location Input")
+    st.subheader("3. Point Location Input")
     colX, colY, colZ = st.columns(3)
     with colX:
         solver_x = st.number_input("Downwind Distance ($x$, m)", min_value=1.0, value=1000.0, step=10.0, key='x_input_solver')
@@ -334,39 +414,143 @@ with tab2:
     # Run calculations when button pressed
     if st.button("Run Calculations for Custom Parameters", key='solve_button'):
         st.subheader("Calculated Results")
-
-        # Concentration at specified (x,y,z)
-        point_C_g_m3 = calculate_single_point_concentration(
-            float(solver_x), float(solver_y), float(solver_z),
-            float(solver_H), float(solver_Q), float(solver_U),
-            solver_stab_class
-        )
+        
+        # --- CALCULATION LOGIC BASED ON DISPERSION MODE ---
+        if use_custom_sigma:
+            # Mode 1: Use Custom Sigma Values
+            point_C_g_m3 = calculate_point_concentration_custom_sigma(
+                float(solver_x), float(solver_y), float(solver_z),
+                float(solver_H), float(solver_Q), float(solver_U),
+                float(solver_sigma_y), float(solver_sigma_z)
+            )
+            max_C_g_m3 = point_C_g_m3 # Max C is just the point C because the max_x calculation is not applicable
+            max_x_loc = solver_x
+            sigma_y_used = solver_sigma_y
+            sigma_z_used = solver_sigma_z
+            
+            st.info("Since fixed $\\sigma_y$ and $\\sigma_z$ were used, $C_{max}$ is simply the concentration at the point specified, and $x_{max}$ is set to the input $x$ distance.")
+            
+        else:
+            # Mode 2: Use Pasquill-Gifford Curves (Original Logic)
+            point_C_g_m3 = calculate_single_point_concentration(
+                float(solver_x), float(solver_y), float(solver_z),
+                float(solver_H), float(solver_Q), float(solver_U),
+                solver_stab_class
+            )
+            max_C_g_m3, max_x_loc = find_max_concentration(solver_H, solver_Q, solver_U, solver_stab_class)
+            sigma_y_used, sigma_z_used = get_dispersion_coefficients(float(solver_x), solver_stab_class)
+        
+        # --- DISPLAY RESULTS ---
         point_C_ug_m3 = point_C_g_m3 * 1e6
-
-        # Max ground concentration using solver parameters
-        max_C_g_m3, max_x_loc = find_max_concentration(solver_H, solver_Q, solver_U, solver_stab_class)
         max_C_ug_m3 = max_C_g_m3 * 1e6
 
         colR1, colR2 = st.columns(2)
         with colR1:
             st.metric(
                 label=f"Concentration at $C({solver_x} m, {solver_y} m, {solver_z} m)$",
-                value=f"{point_C_ug_m3:,.2f} $\\mu g/m^3$"
+                value=f"{point_C_ug_m3:,.2f} µg/m³"
             )
         with colR2:
-            st.metric(
-                label="Maximum Ground Concentration ($C_{max}$)",
-                value=f"{max_C_ug_m3:,.2f} $\\mu g/m^3$"
-            )
+            # Display Max C only if using PG curves or if Max C is the Point C
+            if not use_custom_sigma or (use_custom_sigma and max_x_loc == solver_x):
+                st.metric(
+                    label="Maximum Ground Concentration ($C_{max}$)",
+                    value=f"{max_C_ug_m3:,.2f} µg/m³"
+                )
 
-        st.metric(label="Location of Maximum Ground Concentration ($x_{max}$)", value=f"{max_x_loc:,.1f} m")
-
-        sigma_y_point, sigma_z_point = get_dispersion_coefficients(solver_x, solver_stab_class)
+        if not use_custom_sigma:
+            st.metric(label="Location of Maximum Ground Concentration ($x_{max}$)", value=f"{max_x_loc:,.1f} m")
+        
         st.markdown(f"""
         **Dispersion Coefficients Used at $x={solver_x} \\,\\text{{m}}$:**
-        * $\\sigma_y$: **{sigma_y_point:,.2f} m**
-        * $\\sigma_z$: **{sigma_z_point:,.2f} m**
+        * $\\sigma_y$: **{sigma_y_used:,.2f} $\\text{{m}}$**
+        * $\\sigma_z$: **{sigma_z_used:,.2f} $\\text{{m}}$**
         """)
+
+        # -----------------------
+        # Custom interactive visualization for Problem Solver (below results)
+        # (only contour; centerline option removed)
+        # -----------------------
+        st.markdown("---")
+        st.subheader("Solver — Interactive Contour (hover to read values, zoom/pan available)")
+
+        # Domain based on solver inputs
+        x_plot_max = max(2.0 * float(solver_x), 500.0)
+        x_plot_min = max(0.1, float(solver_x) * 0.01)  # avoid zero
+        x_plot = np.linspace(x_plot_min, x_plot_max, 160)
+
+        # Crosswind window
+        if use_custom_sigma:
+            crosswind_half = max(3.0 * float(solver_sigma_y), 200.0)
+        else:
+            try:
+                est_sigma_y, _ = get_dispersion_coefficients(float(solver_x), solver_stab_class)
+            except Exception:
+                est_sigma_y = 100.0
+            crosswind_half = max(3.0 * est_sigma_y, 200.0)
+
+        y_plot = np.linspace(-crosswind_half, crosswind_half, 120)
+        Xp, Yp = np.meshgrid(x_plot, y_plot)
+
+        # Compute concentration field for solver inputs (g/m^3)
+        Cp = np.zeros_like(Xp, dtype=float)
+
+        if use_custom_sigma:
+            for ii in range(Xp.shape[0]):
+                for jj in range(Xp.shape[1]):
+                    xx = float(Xp[ii, jj])
+                    yy = float(Yp[ii, jj])
+                    Cp[ii, jj] = calculate_point_concentration_custom_sigma(
+                        xx, yy, float(solver_z),
+                        float(solver_H), float(solver_Q), float(solver_U),
+                        float(solver_sigma_y), float(solver_sigma_z)
+                    )
+            plot_mode_label = f"Solver Visualization (Custom σ) at z={solver_z} m"
+        else:
+            Cp = gaussian_plume_model(
+                Xp, Yp, float(solver_z),
+                float(solver_H), float(solver_Q), float(solver_U),
+                solver_stab_class
+            )
+            plot_mode_label = f"Solver Visualization (Pasquill-Gifford: {solver_stab_class}) at z={solver_z} m"
+
+        Cp_ug = Cp * 1e6
+
+        # Build a Plotly contour for interactivity (hover + zoom/pan)
+        fig_pl = go.Figure(
+            data=go.Contour(
+                z=Cp_ug,
+                x=x_plot,  # downwind
+                y=y_plot,  # crosswind
+                colorscale='Viridis',
+                contours=dict(showlabels=False),
+                colorbar=dict(title="Concentration (µg m⁻³)"),
+                hovertemplate='x: %{x:.1f} m<br>y: %{y:.1f} m<br>C: %{z:.2f} µg m⁻³<extra></extra>'
+            )
+        )
+
+        # Add stack marker as scatter
+        fig_pl.add_trace(
+            go.Scatter(
+                x=[0.0],
+                y=[0.0],
+                mode='markers',
+                marker=dict(color='red', size=6),
+                name='Stack (0,0)',
+                hoverinfo='skip'
+            )
+        )
+
+        fig_pl.update_layout(
+            title=plot_mode_label,
+            xaxis_title='Downwind distance x (m)',
+            yaxis_title='Crosswind distance y (m)',
+            autosize=True,
+            margin=dict(l=40, r=20, t=50, b=40)
+        )
+
+        # Show interactive plot (zoom, pan, hover)
+        st.plotly_chart(fig_pl, use_container_width=True)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # --- TAB 3: THEORY & ASSUMPTIONS (UPDATED) ---
@@ -381,9 +565,12 @@ with tab3:
 
         ### Core Equation for $\mathbf{C(x, y, z)}$
 
-        The general equation, which includes the vertical height $z$ and the effect of total ground reflection, is:
+        The general equation, which includes the vertical height $z$ and the effect of total ground reflection (the **virtual image source**), is:
         """
     )
+
+    # --- Diagram of the Gaussian Plume Model added for clarity ---
+    st.markdown("")
 
     # Render the equation cleanly using Streamlit's latex renderer
     st.latex(r"""
