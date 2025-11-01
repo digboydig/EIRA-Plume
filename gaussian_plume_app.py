@@ -318,6 +318,118 @@ with tab1:
 
         st.plotly_chart(fig_tab1, use_container_width=True)
 
+        # --- ADDITIONAL CROSS-SECTIONS (X vs Z, Y vs Z) ---
+        st.markdown("---")
+        st.subheader("Additional Cross-Sectional Views")
+
+        cross_section_option = st.selectbox(
+            "Choose additional cross-section to view:",
+            ("None", "X vs Z (downwind vs height at y=0)", "Y vs Z (crosswind vs height at chosen x)"),
+            index=0,
+            key="tab1_cross_section"
+        )
+
+        # Compute x_max for default chooser
+        max_C_g_m3_loc, max_x_loc = find_max_concentration(H_m, Q_g_s, U_m_s, stability_class)
+
+        if cross_section_option == "X vs Z (downwind vs height at y=0)":
+            # Build x vs z grid at y=0
+            x_xvz = x_plot  # use same downwind resolution
+            # choose reasonable height range: up to max(1.5*H, 300) m
+            z_max_plot = max(1.5 * H_m, 300.0)
+            z_xvz = np.linspace(0.0, z_max_plot, 120)
+            X_xvz, Z_xvz = np.meshgrid(x_xvz, z_xvz)
+
+            # Compute concentrations at y=0 for each (x,z)
+            Cxz = np.zeros_like(X_xvz, dtype=float)
+            # loop over grid (vectorization could be used but this is simple and consistent)
+            for ii in range(X_xvz.shape[0]):
+                for jj in range(X_xvz.shape[1]):
+                    xv = float(X_xvz[ii, jj])
+                    zv = float(Z_xvz[ii, jj])
+                    Cxz[ii, jj] = calculate_single_point_concentration(xv, 0.0, zv, H_m, Q_g_s, U_m_s, stability_class)
+
+            Cxz_ug = Cxz * 1e6
+
+            # Plotly contour x vs z
+            fig_xvz = go.Figure(
+                data=go.Contour(
+                    z=Cxz_ug,
+                    x=x_xvz,
+                    y=z_xvz,
+                    colorscale='Viridis',
+                    contours=dict(showlabels=False),
+                    colorbar=dict(title="Concentration (µg m⁻³)"),
+                    hovertemplate='x: %{x:.1f} m<br>z: %{y:.1f} m<br>C: %{z:.2f} µg m⁻³<extra></extra>'
+                )
+            )
+            fig_xvz.update_layout(
+                title=f"X vs Z (y=0) — Downwind vs Height",
+                xaxis_title='Downwind distance x (m)',
+                yaxis_title='Height z (m)',
+                autosize=True,
+                margin=dict(l=40, r=20, t=50, b=40)
+            )
+            # show marker for stack height H at x=0
+            fig_xvz.add_trace(go.Scatter(x=[0.0], y=[H_m], mode='markers', marker=dict(color='red', size=7), name='Stack H'))
+
+            st.plotly_chart(fig_xvz, use_container_width=True)
+
+            st.markdown(
+                """
+                **Significance:** This plot shows how concentration changes with downwind distance and elevation along the plume centerline (y=0). It helps assess plume rise and where elevated receptors (e.g. rooftops) may intersect high concentration zones.
+                """, unsafe_allow_html=True
+            )
+
+        elif cross_section_option == "Y vs Z (crosswind vs height at chosen x)":
+            # let user choose x location for the vertical cross-section
+            # default to x of maximum ground concentration if present, else midpoint
+            default_x_for_section = float(max_x_loc) if max_x_loc > 0 else float(X_MAX / 2.0)
+            x_chosen = st.slider("Choose downwind distance for Y vs Z slice (x, m)", min_value=1.0, max_value=float(X_MAX), value=float(default_x_for_section), step=10.0, key="tab1_yvz_xslider")
+
+            # build y vs z grid
+            y_yvz = np.linspace(-Y_MAX, Y_MAX, 160)
+            z_max_plot = max(1.5 * H_m, 300.0)
+            z_yvz = np.linspace(0.0, z_max_plot, 120)
+            Y_yvz, Z_yvz = np.meshgrid(y_yvz, z_yvz)
+
+            Cyz = np.zeros_like(Y_yvz, dtype=float)
+            for ii in range(Y_yvz.shape[0]):
+                for jj in range(Y_yvz.shape[1]):
+                    yv = float(Y_yvz[ii, jj])
+                    zv = float(Z_yvz[ii, jj])
+                    Cyz[ii, jj] = calculate_single_point_concentration(float(x_chosen), yv, zv, H_m, Q_g_s, U_m_s, stability_class)
+
+            Cyz_ug = Cyz * 1e6
+
+            fig_yvz = go.Figure(
+                data=go.Contour(
+                    z=Cyz_ug,
+                    x=y_yvz,
+                    y=z_yvz,
+                    colorscale='Viridis',
+                    contours=dict(showlabels=False),
+                    colorbar=dict(title="Concentration (µg m⁻³)"),
+                    hovertemplate='y: %{x:.1f} m<br>z: %{y:.1f} m<br>C: %{z:.2f} µg m⁻³<extra></extra>'
+                )
+            )
+            fig_yvz.update_layout(
+                title=f"Y vs Z at x = {x_chosen:.0f} m — Crosswind vs Height",
+                xaxis_title='Crosswind distance y (m)',
+                yaxis_title='Height z (m)',
+                autosize=True,
+                margin=dict(l=40, r=20, t=50, b=40)
+            )
+            # mark centerline y=0
+            fig_yvz.add_trace(go.Scatter(x=[0.0], y=[H_m], mode='markers', marker=dict(color='red', size=7), name='Stack H (projection)'))
+            st.plotly_chart(fig_yvz, use_container_width=True)
+
+            st.markdown(
+                """
+                **Significance:** This vertical cross-section at a chosen downwind distance shows lateral and vertical dispersion at that location — useful to check ground-level exposure and how concentrations vary with height across the plume.
+                """, unsafe_allow_html=True
+            )
+
     else:
         st.warning(f"The calculated concentration at $z={Z_RECEPTOR_M}$ m is near zero. The plume may be passing above or below this height, or parameters result in high dilution.")
 
