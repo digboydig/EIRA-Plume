@@ -210,14 +210,14 @@ st.sidebar.header("Source & Environment Parameters")
 # 1. Emission Parameters
 st.sidebar.subheader("1. Source Strength")
 st.sidebar.markdown(r"Emission Rate ($Q$, $\text{g/s}$)") # Use markdown for correct LaTeX rendering
-Q_g_s = st.sidebar.slider("", 10.0, 500.0, 100.0, step=10.0, key='Q_slider')
+Q_g_s = st.sidebar.slider('Hidden label', 10.0, 500.0, 100.0, step=10.0, key='Q_slider', label_visibility='collapsed')
 st.sidebar.markdown(r"Effective Stack Height ($H$, $\text{m}$)")
-H_m = st.sidebar.slider("", 10.0, 200.0, 100.0, step=5.0, key='H_slider')
+H_m = st.sidebar.slider('Hidden label', 10.0, 200.0, 100.0, step=5.0, key='H_slider', label_visibility='collapsed')
 
 # 2. Atmospheric Conditions
 st.sidebar.subheader("2. Atmospheric Conditions")
 st.sidebar.markdown(r"Wind Speed ($U$, $\text{m/s}$)")
-U_m_s = st.sidebar.slider("", 1.0, 20.0, 5.0, step=0.5, key='U_slider')
+U_m_s = st.sidebar.slider('Hidden label', 1.0, 20.0, 5.0, step=0.5, key='U_slider', label_visibility='collapsed')
 
 stability_options = {'A': 'A - Extremely Unstable', 'B': 'B - Moderately Unstable', 'C': 'C - Slightly Unstable',
                      'D': 'D - Neutral (Overcast/High Wind)', 'E': 'E - Slightly Stable', 'F': 'F - Moderately Stable'}
@@ -316,7 +316,85 @@ with tab1:
             margin=dict(l=40, r=20, t=50, b=40)
         )
 
-        st.plotly_chart(fig_tab1, use_container_width=True)
+        
+        # --- Time-evolution animation (advection) option for Tab 1 ---
+        st.markdown("**Optional:** Animate plume advection over time (simple translation by wind speed).")
+        animate_tab1 = st.checkbox("Enable time-evolution animation (advect plume with wind)", value=False, key='enable_animation_tab1')
+        if animate_tab1:
+            colta, coltb = st.columns([1,1])
+            with colta:
+                total_time_t = st.number_input("Total animation time (s)", min_value=1, max_value=3600, value=120, step=10, key='anim_total_time_tab1')
+            with coltb:
+                n_frames_t = st.number_input("Number of frames", min_value=2, max_value=60, value=12, step=1, key='anim_n_frames_tab1')
+            times_t = np.linspace(0.0, float(total_time_t), int(n_frames_t))
+            frames_t = []
+            # Fix color scale across frames
+            zmin_t = np.nanmin(C_ug_m3)
+            zmax_t = np.nanmax(C_ug_m3)
+            for ti in times_t:
+                x_shift = float(U_m_s) * ti
+                X_adv = X - x_shift
+                C_adv = gaussian_plume_model(X_adv, Y, Z_RECEPTOR_M, H_m, Q_g_s, U_m_s, stability_class)
+                C_adv_ug = C_adv * 1e6
+                frame = go.Frame(
+                    data=[go.Contour(z=C_adv_ug, x=x_plot, y=y_plot, colorscale='Viridis', zmin=zmin_t, zmax=zmax_t, contours=dict(showlabels=False))],
+                    name=f"t{int(ti)}"
+                )
+                frames_t.append(frame)
+            # Base figure = first frame
+            fig_anim_tab1 = go.Figure(
+                data=go.Contour(z=frames_t[0].data[0].z, x=x_plot, y=y_plot, colorscale='Viridis', zmin=zmin_t, zmax=zmax_t, contours=dict(showlabels=False)),
+                frames=frames_t
+            )
+            # add stack marker
+            fig_anim_tab1.add_trace(go.Scatter(x=[0.0], y=[0.0], mode='markers', marker=dict(color='red', size=7), name='Stack (0,0)', hoverinfo='skip'))
+            fig_anim_tab1.update_layout(
+                title=plot_title + " — Time Evolution (advection)",
+                xaxis_title='Downwind Distance (x, m)',
+                yaxis_title='Crosswind Distance (y, m)',
+                autosize=True,
+                margin=dict(l=40, r=20, t=80, b=40),
+                updatemenus=[
+                    dict(
+                        type="buttons",
+                        showactive=True,
+                        direction='left',
+                        pad={'r': 10, 't': 10},
+                        x=0.5,
+                        xanchor='center',
+                        y=-0.62,
+                        yanchor='top',
+                        buttons=[
+                            dict(label='▶️ Play',
+                                 method='animate',
+                                 args=[None, {'frame': {'duration': max(100, int(1000*total_time_t/len(frames_t))), 'redraw': True},
+                                               'fromcurrent': True, 'transition': {'duration': 0}}]),
+                            dict(label='⏸️ Pause',
+                                 method='animate',
+                                 args=[[None], {'frame': {'duration': 0, 'redraw': False}, 'mode': 'immediate', 'transition': {'duration': 0}}])
+                        ]
+                    )
+                ],
+
+                sliders=[
+                    {
+                        "steps": [
+                            {
+                                "args": [[f.name], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate"}],
+                                "label": f.name,
+                                "method": "animate"
+                            }
+                            for f in frames_t
+                        ],
+                        "currentvalue": {"prefix": "Frame: "},
+                        "pad": {"t": 50}
+                    }
+                ]
+            )
+            st.plotly_chart(fig_anim_tab1, use_container_width=True)
+        else:
+            st.plotly_chart(fig_tab1, use_container_width=True)
+
 
         # --- ADDITIONAL CROSS-SECTIONS (X vs Z, Y vs Z) ---
         st.markdown("---")
@@ -662,7 +740,87 @@ with tab2:
         )
 
         # Show interactive plot (zoom, pan, hover)
-        st.plotly_chart(fig_pl, use_container_width=True)
+        
+        # --- Time-evolution animation (advection) option ---
+        st.markdown("**Optional:** Animate plume advection over time (simple translation by wind speed).")
+        animate = st.checkbox("Enable time-evolution animation (advect plume with wind)", value=False, key='enable_animation')
+        if animate:
+            # Time control inputs
+            colt1, colt2 = st.columns([1,1])
+            with colt1:
+                total_time = st.number_input("Total animation time (s)", min_value=1, max_value=3600, value=120, step=10, key='anim_total_time')
+            with colt2:
+                n_frames = st.number_input("Number of frames", min_value=2, max_value=60, value=12, step=1, key='anim_n_frames')
+            # Build frames by advecting plume downstream by U * t
+            times = np.linspace(0.0, float(total_time), int(n_frames))
+            frames = []
+            # Keep color scale fixed across frames for consistency
+            zmin = np.nanmin(Cp_ug)
+            zmax = np.nanmax(Cp_ug)
+            for ti in times:
+                x_shift = float(solver_U) * ti  # advected distance
+                # Shift the x_grid for advection: evaluate plume at X - U*t
+                Xp_adv = Xp - x_shift
+                Cp_adv = gaussian_plume_model(Xp_adv, Yp, float(solver_z), float(solver_H), float(solver_Q), float(solver_U), solver_stab_class)
+                Cp_adv_ug = Cp_adv * 1e6
+                frame = go.Frame(
+                    data=[go.Contour(z= Cp_adv_ug, x=x_plot, y=y_plot, colorscale='Viridis', zmin=zmin, zmax=zmax, contours=dict(showlabels=False))],
+                    name=f"t{int(ti)}"
+                )
+                frames.append(frame)
+            # Build base figure (first frame)
+            fig_anim = go.Figure(
+                data=go.Contour(z=frames[0].data[0].z, x=x_plot, y=y_plot, colorscale='Viridis', zmin=zmin, zmax=zmax, contours=dict(showlabels=False)),
+                frames=frames
+            )
+            # Add stack marker
+            fig_anim.add_trace(go.Scatter(x=[0.0], y=[0.0], mode='markers', marker=dict(color='red', size=6), name='Stack (0,0)', hoverinfo='skip'))
+            # Update layout with animation controls (play/pause buttons)
+            fig_anim.update_layout(
+                title=plot_mode_label + " — Time Evolution (advection)",
+                xaxis_title='Downwind distance x (m)',
+                yaxis_title='Crosswind distance y (m)',
+                autosize=True,
+                margin=dict(l=40, r=20, t=80, b=40),
+                updatemenus=[
+                    dict(
+                        type="buttons",
+                        showactive=False,
+                        y=1.15,
+                        x=1.05,
+                        xanchor="right",
+                        yanchor="top",
+                        buttons=[
+                            dict(label="Play",
+                                 method="animate",
+                                 args=[None, {"frame": {"duration": max(100, int(1000*total_time/len(frames))), "redraw": True},
+                                              "fromcurrent": True, "transition": {"duration": 0}}]),
+                            dict(label="Pause",
+                                 method="animate",
+                                 args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate", "transition": {"duration": 0}}])
+                        ]
+                    )
+                ],
+                sliders=[
+                    {
+                        "steps": [
+                            {
+                                "args": [[f.name], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate"}],
+                                "label": f.name,
+                                "method": "animate"
+                            }
+                            for f in frames
+                        ],
+                        "currentvalue": {"prefix": "Frame: "},
+                        "pad": {"t": 50}
+                    }
+                ]
+            )
+            st.plotly_chart(fig_anim, use_container_width=True)
+        else:
+            # Show static plot (original behavior)
+            st.plotly_chart(fig_pl, use_container_width=True)
+
 
 # ----------------------------------------------------------------------------------------------------------------------
 # --- TAB 3: THEORY & ASSUMPTIONS (UPDATED) ---
