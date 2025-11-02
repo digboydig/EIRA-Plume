@@ -64,18 +64,11 @@ def _render_frame_with_top_info(array2d, t_seconds: float, vmin=None, vmax=None,
     Render a 2D array to an RGB numpy image using matplotlib including:
       - axes (x and y) for the main concentration map
       - colorbar
-      - top text: "t = XX.X s  |  conc = YYY.YY µg/m³"
-    Parameters:
-      - array2d: 2D numpy array (e.g., concentration in µg/m^3)
-      - t_seconds: time for the frame (seconds)
-      - vmin, vmax: color scale limits (same across frames)
-      - x_extent: (x_min, x_max) in meters for x axis
-      - y_extent: (y_min, y_max) in meters for y axis
-      - figsize: overall figure size (width, height) in inches
-    Returns:
-      - RGB image as numpy uint8 array (H, W, 3)
+      - top text: "t = XX.X s  |  conc. = YYY.YY µg/m³"
+    Returns RGB uint8 image (H, W, 3).
     """
     fig, ax = plt.subplots(figsize=figsize)
+
     # Determine extents
     if x_extent is None:
         x_extent = (0.0, array2d.shape[1])
@@ -98,15 +91,17 @@ def _render_frame_with_top_info(array2d, t_seconds: float, vmin=None, vmax=None,
 
     # Top-center info line
     info_text = f"t = {t_seconds:.1f} s   |   conc. = {max_val:,.2f} µg/m³"
-    # Place just above the axes (figure coordinates)
     fig.text(0.5, 0.96, info_text, ha='center', va='center', fontsize=11, weight='bold')
 
+    # draw and grab RGBA buffer (works with FigureCanvasAgg)
     fig.canvas.draw()
-    # grab RGB buffer from figure
     w, h = fig.canvas.get_width_height()
-    img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((h, w, 3))
+    buf = fig.canvas.buffer_rgba()           # robust cross-backend
+    arr = np.frombuffer(buf, dtype=np.uint8) # length = w*h*4
+    arr = arr.reshape((h, w, 4))             # RGBA
+    rgb = arr[..., :3]                       # drop alpha channel
     plt.close(fig)
-    return img
+    return rgb
 
 # --- 2. MODEL FUNCTIONS (MODIFIED) ---
 
@@ -905,9 +900,6 @@ with tab3:
         The general equation, which includes the vertical height $z$ and the effect of total ground reflection (the **virtual image source**), is:
         """
     )
-
-    # --- Diagram of the Gaussian Plume Model added for clarity ---
-    st.markdown("")
 
     # Render the equation cleanly using Streamlit's latex renderer
     st.latex(r"""
