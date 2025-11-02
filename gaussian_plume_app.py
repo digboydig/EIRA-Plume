@@ -8,7 +8,7 @@ Capabilities:
 - Cross-sectional views (X vs Z and Y vs Z) and summary metrics for quick assessment of peak ground impacts.
 
 Author: Subodh Purohit
-Guide: Dr. Abhradeep Majumder, Ph.D
+Motivation: Dr. Abhradeep Majumder, Ph.D
 Purpose: Educational use only.
 """
 
