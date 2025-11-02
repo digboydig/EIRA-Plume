@@ -2,3 +2,8 @@ streamlit
 numpy
 matplotlib
 plotly
+numpy
+matplotlib
+plotly
+imageio
+imageio-ffmpeg
