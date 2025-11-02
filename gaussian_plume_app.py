@@ -2,6 +2,10 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
+import imageio
+import io
+import os
+from typing import Tuple
 
 # --- 1. CONFIGURATION AND MODEL PARAMETERS ---
 
@@ -27,6 +31,83 @@ SIGMA_COEFFS = {
     'index': {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5}
 }
 
+# --- 1.5 NEW: MP4 EXPORT HELPERS ---
+def _ensure_dir(path: str):
+    d = os.path.dirname(path)
+    if d and not os.path.exists(d):
+        os.makedirs(d, exist_ok=True)
+
+def export_animation_to_mp4(frames_rgb, fps: int, out_path: str):
+    """
+    frames_rgb: iterable of numpy arrays (H,W,3) in uint8 representing images
+    fps: frames per second
+    out_path: path to write mp4
+    """
+    # Ensure output directory exists
+    _ensure_dir(out_path)
+    # Use imageio FFmpeg writer
+    try:
+        writer = imageio.get_writer(out_path, fps=fps, codec='libx264', format='ffmpeg', macro_block_size=None)
+    except Exception:
+        # fallback without specifying codec
+        writer = imageio.get_writer(out_path, fps=fps, format='ffmpeg')
+
+    for im in frames_rgb:
+        writer.append_data(im)
+    writer.close()
+    return out_path
+
+def _render_frame_with_top_info(array2d, t_seconds: float, vmin=None, vmax=None,
+                                x_extent: Tuple[float,float]=None, y_extent: Tuple[float,float]=None,
+                                figsize=(10,4)):
+    """
+    Render a 2D array to an RGB numpy image using matplotlib including:
+      - axes (x and y) for the main concentration map
+      - colorbar
+      - top text: "t = XX.X s  |  conc = YYY.YY µg/m³"
+    Parameters:
+      - array2d: 2D numpy array (e.g., concentration in µg/m^3)
+      - t_seconds: time for the frame (seconds)
+      - vmin, vmax: color scale limits (same across frames)
+      - x_extent: (x_min, x_max) in meters for x axis
+      - y_extent: (y_min, y_max) in meters for y axis
+      - figsize: overall figure size (width, height) in inches
+    Returns:
+      - RGB image as numpy uint8 array (H, W, 3)
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    # Determine extents
+    if x_extent is None:
+        x_extent = (0.0, array2d.shape[1])
+    if y_extent is None:
+        y_extent = (0.0, array2d.shape[0])
+
+    im = ax.imshow(array2d, origin='lower', aspect='auto',
+                   extent=(x_extent[0], x_extent[1], y_extent[0], y_extent[1]),
+                   vmin=vmin, vmax=vmax)
+    ax.set_xlabel('Downwind distance x (m)')
+    ax.set_ylabel('Crosswind distance y (m)')
+    ax.set_title('Concentration (µg m⁻³)')
+
+    # Add colorbar
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Concentration (µg m⁻³)')
+
+    # Compute max concentration to display
+    max_val = np.nanmax(array2d) if array2d.size else 0.0
+
+    # Top-center info line
+    info_text = f"t = {t_seconds:.1f} s   |   conc. = {max_val:,.2f} µg/m³"
+    # Place just above the axes (figure coordinates)
+    fig.text(0.5, 0.96, info_text, ha='center', va='center', fontsize=11, weight='bold')
+
+    fig.canvas.draw()
+    # grab RGB buffer from figure
+    w, h = fig.canvas.get_width_height()
+    img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((h, w, 3))
+    plt.close(fig)
+    return img
+
 # --- 2. MODEL FUNCTIONS (MODIFIED) ---
 
 @st.cache_data
@@ -47,12 +128,21 @@ def get_dispersion_coefficients(x, stability_class):
     Bz = SIGMA_COEFFS['z']['B'][idx]
 
     # Calculate sigma values (using a simplified power law approximation)
-    sigma_y = Ay * (x**By)
-    sigma_z = Az * (x**Bz)
+    # Accept scalar or numpy arrays
+    x_arr = np.asarray(x, dtype=float)
+    x_for_power = np.where(x_arr <= 1e-6, 1e-6, x_arr)
+
+    sigma_y = Ay * (x_for_power**By)
+    sigma_z = Az * (x_for_power**Bz)
     
     # Simple adjustment for stable conditions (F) to prevent extremely small sigma_z at short distances
-    if stability_class == 'F' and x < 100:
-        sigma_z = max(sigma_z, 1.0) # Ensure some initial mixing
+    if stability_class == 'F':
+        # Apply elementwise for arrays
+        sigma_z = np.where(np.asarray(x) < 100, np.maximum(sigma_z, 1.0), sigma_z)
+
+    # ensure minimum positive sigma to avoid division issues
+    sigma_y = np.maximum(sigma_y, 1e-3)
+    sigma_z = np.maximum(sigma_z, 1e-3)
 
     return sigma_y, sigma_z
 
@@ -62,42 +152,40 @@ def gaussian_plume_model(x_m, y_m, z, H, Q, U, stability_class):
     """
     Calculates the concentration C(x, y, z) for a 2D slice (meshgrid) at a fixed height z.
     If z=0, this is the ground-level concentration.
+    Vectorized across the provided meshgrid arrays.
     """
-    C = np.zeros_like(x_m, dtype=float)
+    X = np.asarray(x_m, dtype=float)
+    Y = np.asarray(y_m, dtype=float)
+
+    C = np.zeros_like(X, dtype=float)
+
+    # Mask for positive downwind distances
+    positive_mask = X > 0.0
+    if not np.any(positive_mask):
+        return C
+
+    # Get sigma arrays (vectorized)
+    sigma_y, sigma_z = get_dispersion_coefficients(X, stability_class)
     
-    for i in range(x_m.shape[0]):
-        for j in range(x_m.shape[1]):
-            x = x_m[i, j]
-            y = y_m[i, j]
-            
-            # Avoid division by zero at x=0
-            if x <= 0:
-                C[i, j] = 0.0
-                continue
-                
-            sigma_y, sigma_z = get_dispersion_coefficients(x, stability_class)
-            
-            if sigma_y == 0 or sigma_z == 0:
-                C[i, j] = 0.0
-                continue
-                
-            # 1. Crosswind (y) term
-            exp_y = np.exp(-y**2 / (2 * sigma_y**2))
-            
-            # 2. Vertical (z) term (real source + virtual image source)
-            # Full term: exp(-(z-H)^2 / (2*sigma_z^2)) + exp(-(z+H)^2 / (2*sigma_z^2))
-            exp_z_real = np.exp(-(z - H)**2 / (2 * sigma_z**2))
-            exp_z_image = np.exp(-(z + H)**2 / (2 * sigma_z**2))
-            
-            vertical_term = exp_z_real + exp_z_image
-            
-            # 3. Scaling Factor
-            # The full equation has 2*pi in the denominator
-            scaling_factor = Q / (2 * np.pi * U * sigma_y * sigma_z)
-            
-            # Total concentration
-            C[i, j] = scaling_factor * exp_y * vertical_term
-            
+    # Avoid zeros (already clamped in get_dispersion_coefficients)
+    denom = 2 * np.pi * U * sigma_y * sigma_z
+
+    # 1. Crosswind (y) term
+    exp_y = np.exp(-Y**2 / (2 * sigma_y**2))
+    
+    # 2. Vertical (z) term (real source + virtual image source)
+    exp_z_real = np.exp(-(z - H)**2 / (2 * sigma_z**2))
+    exp_z_image = np.exp(-(z + H)**2 / (2 * sigma_z**2))
+    vertical_term = exp_z_real + exp_z_image
+    
+    # 3. Scaling Factor and total concentration
+    with np.errstate(divide='ignore', invalid='ignore'):
+        scaling_factor = np.where(positive_mask, Q / denom, 0.0)
+        C = scaling_factor * exp_y * vertical_term
+
+    # Force zero where x <= 0
+    C = np.where(positive_mask, C, 0.0)
+    
     return C
 
 def find_max_concentration(H, Q, U, stability_class):
@@ -391,7 +479,66 @@ with tab1:
                     }
                 ]
             )
+
+            # --- NEW: MP4 Export UI for Tab 1 animation (includes total animation time field) ---
+            st.markdown("**Export Animation:** Create and download an MP4 of this time-evolution animation.")
+            cole1, cole2, cole3 = st.columns([1,1,1])
+            with cole1:
+                export_name_tab1 = st.text_input("Output filename (mp4)", value="EIRA_Plume_Animation", key='export_name_tab1')
+            with cole2:
+                export_fps_tab1 = st.number_input("Frames per second (fps)", min_value=1, max_value=60, value=max(1, int(n_frames_t / max(1, total_time_t / 10))), step=1, key='export_fps_tab1')
+            with cole3:
+                # This is the new field the user requested: explicit total animation time for the exported movie
+                export_total_time_tab1 = st.number_input("Export total animation time (s)", min_value=1, max_value=3600, value=int(total_time_t), step=1, key='export_total_time_tab1')
+            export_button_tab1 = st.button("Export animation to MP4", key='export_btn_tab1')
+
+            # Show animation interactively
             st.plotly_chart(fig_anim_tab1, use_container_width=True)
+
+            if export_button_tab1:
+                st.info("Rendering MP4 — this may take a moment. Please don't close the tab.")
+                # Recompute times for export using export_total_time_tab1 and same number of frames n_frames_t
+                times_export = np.linspace(0.0, float(export_total_time_tab1), int(n_frames_t))
+                frames_img = []
+                prog = st.progress(0)
+                total_frames = len(times_export)
+                # Determine output filename: append total time (s) info if not present
+                base_name = export_name_tab1.strip()
+                if not base_name.lower().endswith('.mp4'):
+                    base_name = base_name + '.mp4'
+                # append total-time suffix if not included
+                if f"_{int(export_total_time_tab1)}s" not in base_name:
+                    name_no_ext, ext = os.path.splitext(base_name)
+                    base_name = f"{name_no_ext}_{int(export_total_time_tab1)}s{ext}"
+                out_path = os.path.join("/tmp", base_name)
+                try:
+                    # Use the same color scale across frames
+                    vmin_export = zmin_t
+                    vmax_export = zmax_t
+                    x_extent = (x_plot[0], x_plot[-1])
+                    y_extent = (y_plot[0], y_plot[-1])
+                    for idx, ti in enumerate(times_export):
+                        x_shift = float(U_m_s) * ti
+                        X_adv = X - x_shift
+                        C_adv = gaussian_plume_model(X_adv, Y, Z_RECEPTOR_M, H_m, Q_g_s, U_m_s, stability_class)
+                        C_adv_ug = C_adv * 1e6
+                        # Render frame to image with axes and top info line
+                        img = _render_frame_with_top_info(C_adv_ug, t_seconds=float(ti),
+                                                          vmin=vmin_export, vmax=vmax_export,
+                                                          x_extent=x_extent, y_extent=y_extent,
+                                                          figsize=(12,4))
+                        frames_img.append(img)
+                        prog.progress(int((idx+1)/total_frames * 100))
+                    # Write mp4
+                    mp4_path = export_animation_to_mp4(frames_img, fps=int(export_fps_tab1), out_path=out_path)
+                    # Read file and offer download
+                    with open(mp4_path, "rb") as f:
+                        mp4_bytes = f.read()
+                    st.success(f"MP4 created: {mp4_path}")
+                    st.download_button("Download MP4", data=mp4_bytes, file_name=os.path.basename(mp4_path), mime="video/mp4")
+                except Exception as e:
+                    st.error(f"Failed to create MP4: {e}")
+
         else:
             st.plotly_chart(fig_tab1, use_container_width=True)
 
@@ -542,7 +689,7 @@ with tab1:
         st.info("Plume maximum could not be calculated. Ensure H is not too large or Q is not too small.")
 
 # ----------------------------------------------------------------------------------------------------------------------
-# --- TAB 2: PROBLEM SOLVER ---
+# --- TAB 2: PROBLEM SOLVER (NO ANIMATION / NO EXPORT) ---
 with tab2:
     st.subheader("Point Concentration & $x_{max}$ Solver")
     st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters** independent of the visualizer's sidebar.")
@@ -659,7 +806,7 @@ with tab2:
 
         # -----------------------
         # Custom interactive visualization for Problem Solver (below results)
-        # (only contour; centerline option removed)
+        # (only contour; centerline option removed). NOTE: animation/export removed per request.
         # -----------------------
         st.markdown("---")
         st.subheader("Solver — Interactive Contour (hover to read values, zoom/pan available)")
@@ -739,87 +886,7 @@ with tab2:
             margin=dict(l=40, r=20, t=50, b=40)
         )
 
-        # Show interactive plot (zoom, pan, hover)
-        
-        # --- Time-evolution animation (advection) option ---
-        st.markdown("**Optional:** Animate plume advection over time (simple translation by wind speed).")
-        animate = st.checkbox("Enable time-evolution animation (advect plume with wind)", value=False, key='enable_animation')
-        if animate:
-            # Time control inputs
-            colt1, colt2 = st.columns([1,1])
-            with colt1:
-                total_time = st.number_input("Total animation time (s)", min_value=1, max_value=3600, value=120, step=10, key='anim_total_time')
-            with colt2:
-                n_frames = st.number_input("Number of frames", min_value=2, max_value=60, value=12, step=1, key='anim_n_frames')
-            # Build frames by advecting plume downstream by U * t
-            times = np.linspace(0.0, float(total_time), int(n_frames))
-            frames = []
-            # Keep color scale fixed across frames for consistency
-            zmin = np.nanmin(Cp_ug)
-            zmax = np.nanmax(Cp_ug)
-            for ti in times:
-                x_shift = float(solver_U) * ti  # advected distance
-                # Shift the x_grid for advection: evaluate plume at X - U*t
-                Xp_adv = Xp - x_shift
-                Cp_adv = gaussian_plume_model(Xp_adv, Yp, float(solver_z), float(solver_H), float(solver_Q), float(solver_U), solver_stab_class)
-                Cp_adv_ug = Cp_adv * 1e6
-                frame = go.Frame(
-                    data=[go.Contour(z= Cp_adv_ug, x=x_plot, y=y_plot, colorscale='Viridis', zmin=zmin, zmax=zmax, contours=dict(showlabels=False))],
-                    name=f"t{int(ti)}"
-                )
-                frames.append(frame)
-            # Build base figure (first frame)
-            fig_anim = go.Figure(
-                data=go.Contour(z=frames[0].data[0].z, x=x_plot, y=y_plot, colorscale='Viridis', zmin=zmin, zmax=zmax, contours=dict(showlabels=False)),
-                frames=frames
-            )
-            # Add stack marker
-            fig_anim.add_trace(go.Scatter(x=[0.0], y=[0.0], mode='markers', marker=dict(color='red', size=6), name='Stack (0,0)', hoverinfo='skip'))
-            # Update layout with animation controls (play/pause buttons)
-            fig_anim.update_layout(
-                title=plot_mode_label + " — Time Evolution (advection)",
-                xaxis_title='Downwind distance x (m)',
-                yaxis_title='Crosswind distance y (m)',
-                autosize=True,
-                margin=dict(l=40, r=20, t=80, b=40),
-                updatemenus=[
-                    dict(
-                        type="buttons",
-                        showactive=False,
-                        y=1.15,
-                        x=1.05,
-                        xanchor="right",
-                        yanchor="top",
-                        buttons=[
-                            dict(label="Play",
-                                 method="animate",
-                                 args=[None, {"frame": {"duration": max(100, int(1000*total_time/len(frames))), "redraw": True},
-                                              "fromcurrent": True, "transition": {"duration": 0}}]),
-                            dict(label="Pause",
-                                 method="animate",
-                                 args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate", "transition": {"duration": 0}}])
-                        ]
-                    )
-                ],
-                sliders=[
-                    {
-                        "steps": [
-                            {
-                                "args": [[f.name], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate"}],
-                                "label": f.name,
-                                "method": "animate"
-                            }
-                            for f in frames
-                        ],
-                        "currentvalue": {"prefix": "Frame: "},
-                        "pad": {"t": 50}
-                    }
-                ]
-            )
-            st.plotly_chart(fig_anim, use_container_width=True)
-        else:
-            # Show static plot (original behavior)
-            st.plotly_chart(fig_pl, use_container_width=True)
+        st.plotly_chart(fig_pl, use_container_width=True)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
