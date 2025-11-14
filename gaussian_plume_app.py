@@ -772,7 +772,7 @@ def _build_theory_tab():
         ---
         ###### Application Development
 
-        This interactive Gaussian Plume Dispersion Model application was developed by **Subodh Purohit** [LinkedIn](www.linkedin.com/in/subodhpurohit/) as an educational tool.
+        This interactive Gaussian Plume Dispersion Model application was developed by **Subodh Purohit** ([LinkedIn](https://www.linkedin.com/in/subodhpurohit/)) as an educational tool.
         """, unsafe_allow_html=True)
 
 # -------------------------
