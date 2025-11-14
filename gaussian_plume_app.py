@@ -274,7 +274,8 @@ def _build_visualizer_tab(Q_g_s, H_m, U_m_s, stability_class, Z_RECEPTOR_M, stab
     st.title("Gaussian Plume Dispersion Visualizer")
     st.markdown("An interactive model to explore how source parameters and atmospheric stability affect pollutant spread and ground-level concentration.")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Plume Visualizer", "Problem Solver", "Theory & Assumptions", "3D Visualization"])
+    # New tab order: Plume Visualizer, Problem Solver, 3D Visualization, Theory & Assumptions
+    tab1, tab2, tab3, tab4 = st.tabs(["Plume Visualizer", "Problem Solver", "3D Visualization", "Theory & Assumptions"])
 
     # --- Tab 1: Plume Visualizer ---
     with tab1:
@@ -522,119 +523,54 @@ def _build_visualizer_tab(Q_g_s, H_m, U_m_s, stability_class, Z_RECEPTOR_M, stab
     with tab2:
         _build_solver_tab(stability_options)
 
-    # --- Tab 3: Theory & Assumptions ---
+    # --- Tab 3: 3D Visualization (moved from previous Tab 4) ---
     with tab3:
-        _build_theory_tab()
-
-    # --- Tab 4: 3D Visualization (cosmetic-only changes: colour scale changed to 'Plasma'; snapshot removed) ---
-    with tab4:
         st.subheader("3D Plume Surface (interactive)")
-        st.write("Interactive 3D surface. Use camera presets or play rotation to animate the camera.")
-
+        st.write("This interactive 3D surface shows concentration vs x and y at the selected receptor height. Use the rotating option to animate the camera.")
         try:
-            # Reuse arrays computed above in Tab 1
-            surf_x = np.asarray(x_range, dtype=float)
-            surf_y = np.asarray(y_range, dtype=float)
-            surf_z = np.asarray(C_ug_m3, dtype=float)   # (N_y, N_x)
+            # Reuse arrays computed above
+            surf_x = x_range  # shape (N_x,)
+            surf_y = y_range  # shape (N_y,)
+            # Use µg m^-3 for plotting consistency with contours
+            surf_z = C_ug_m3    # expected shape (len(y), len(x)) => (N_y, N_x)
 
-            # Ensure surf_z shape is (len(y), len(x))
+            # --- Robust shape/orientation check for surf arrays ---
+            surf_x = np.asarray(surf_x, dtype=float)
+            surf_y = np.asarray(surf_y, dtype=float)
+            surf_z = np.asarray(surf_z, dtype=float)
+            expected_shape = (surf_y.size, surf_x.size)
             if surf_z.ndim != 2:
                 raise ValueError(f"surf_z must be 2D, got ndim={surf_z.ndim}")
             if surf_z.shape == (surf_x.size, surf_y.size):
+                # common transpose mismatch - fix automatically
                 surf_z = surf_z.T
-            expected_shape = (surf_y.size, surf_x.size)
-            if surf_z.shape != expected_shape:
+            elif surf_z.shape != expected_shape:
+                # Attempt a safe reshape only if total elements match; otherwise raise
                 if surf_z.size == expected_shape[0] * expected_shape[1]:
                     surf_z = surf_z.reshape(expected_shape)
                 else:
-                    raise ValueError(f"surf_z shape {surf_z.shape} incompatible with expected {expected_shape}")
+                    raise ValueError(f"surf_z shape {surf_z.shape} is incompatible with expected {expected_shape}")
 
-            # --- Cosmetic controls (Tab 4 only) ---
-            c1, c2 = st.columns([1.5, 1.0])
-            with c1:
-                camera_preset = st.selectbox("Camera view:", ("Default", "Top", "Isometric", "Front"), index=0, key="tab4_cam")
-            with c2:
-                enable_rotate = st.checkbox("Enable rotating animation", value=False, key="tab4_rotate")
+            # Simple control: enable rotating animation (keeps this feature)
+            enable_rotate = st.checkbox("Enable rotating animation (adds Play button)", value=False)
 
-            # Compute peak point for annotation
-            idx_flat = np.nanargmax(surf_z)
-            yi, xi = np.unravel_index(idx_flat, surf_z.shape)
-            peak_x = float(surf_x[xi])
-            peak_y = float(surf_y[yi])
-            peak_c = float(surf_z[yi, xi])
-
-            # Build main 3D figure with nicer lighting & hovertemplate
-            hover_tmpl = "x: %{x:.1f} m<br>y: %{y:.1f} m<br>C: %{z:.2f} µg/m³<extra></extra>"
-
-            # Lighting for nicer depth perception
-            lighting = dict(ambient=0.6, diffuse=0.6, fresnel=0.1, roughness=0.8)
-            lightpos = dict(x=1000, y=1000, z=1000)
-
-            # --- COLOUR CHANGE HERE: using 'Plasma' instead of 'Viridis' ---
-            fig3d = go.Figure(
-                data=go.Surface(
-                    x=surf_x,
-                    y=surf_y,
-                    z=surf_z,
-                    colorscale='Plasma',  # <<-- changed colour scale for Tab 4 only
-                    cmin=np.nanmin(surf_z),
-                    cmax=np.nanmax(surf_z),
-                    colorbar=dict(title="Concentration (µg m⁻³)", len=0.6, y=0.45),
-                    hovertemplate=hover_tmpl,
-                    lighting=lighting,
-                    lightposition=lightpos,
-                    showscale=True,
-                    opacity=1.0
-                )
-            )
-
-            # Peak marker (small red sphere)
-            fig3d.add_trace(
-                go.Scatter3d(
-                    x=[peak_x],
-                    y=[peak_y],
-                    z=[peak_c],
-                    mode='markers+text',
-                    marker=dict(size=4, color='red'),
-                    text=[f"Peak: {peak_c:.2f} µg/m³"],
-                    textposition="top center",
-                    showlegend=False,
-                    hoverinfo='skip'
-                )
-            )
-
-            # Camera presets mapping
-            def camera_for_preset(name):
-                if name == "Top":
-                    return dict(eye=dict(x=0.0, y=0.0, z=2.5))
-                if name == "Isometric":
-                    return dict(eye=dict(x=1.25, y=1.25, z=0.8))
-                if name == "Front":
-                    return dict(eye=dict(x=2.5, y=0.0, z=0.8))
-                return dict(eye=dict(x=1.8, y=1.8, z=0.8))
-
-            # Apply camera preset
-            cam = camera_for_preset(camera_preset)
+            # Build main 3D surface figure
+            fig3d = go.Figure(data=[go.Surface(x=surf_x, y=surf_y, z=surf_z, showscale=True, colorbar=dict(title="Concentration (µg m⁻³)"))])
             fig3d.update_layout(
-                title=dict(text=f"3D Concentration at z={Z_RECEPTOR_M} m (Stability: {stability_class})", x=0.5),
-                scene=dict(
-                    xaxis=dict(title='x (m)', tickformat=',d'),
-                    yaxis=dict(title='y (m)', tickformat=',d'),
-                    zaxis=dict(title='Concentration (µg m⁻³)'),
-                    camera=cam
-                ),
-                margin=dict(l=20, r=20, t=60, b=20),
-                height=700
+                title=f"3D Concentration Surface at z = {Z_RECEPTOR_M} m",
+                scene=dict(xaxis_title='x (m)', yaxis_title='y (m)', zaxis_title='Concentration (µg m⁻³)'),
+                height=700,
             )
 
-            # Rotating animation frames (kept) — Play button appears only when enabled
+            # If rotating animation enabled: create frames that modify camera position
             if enable_rotate:
                 angles = np.linspace(0, 360, 36, endpoint=False)
                 frames = []
                 for ang in angles:
                     rad = np.deg2rad(ang)
-                    eye = dict(x=2.2 * np.cos(rad), y=2.2 * np.sin(rad), z=0.9)
-                    frames.append(go.Frame(layout=dict(scene=dict(camera=dict(eye=eye)))))
+                    cam = dict(eye=dict(x=2.5 * np.cos(rad), y=2.5 * np.sin(rad), z=0.8))
+                    # Frame must include a layout with scene.camera
+                    frames.append(go.Frame(layout=dict(scene=dict(camera=cam))))
                 fig3d.frames = frames
                 fig3d.update_layout(
                     updatemenus=[dict(type='buttons',
@@ -646,11 +582,14 @@ def _build_visualizer_tab(Q_g_s, H_m, U_m_s, stability_class, Z_RECEPTOR_M, stab
                                       pad=dict(t=45, r=10),
                                       buttons=[dict(label='Play rotation', method='animate', args=[None, {"frame": {"duration": 100, "redraw": True}, "fromcurrent": True, "transition": {"duration": 0}}])])])
             st.plotly_chart(fig3d, use_container_width=True)
+            st.caption("Rotate/zoom the 3D view with your mouse or touch. Hover shows values. Use the checkbox to play a rotating camera animation.")
 
-            st.caption("Hover for exact values. Use camera preset or enable rotation to animate the camera view.")
+        except Exception as _e:
+            st.error(f"3D visualization unavailable (internal error): {_e}. The rest of the app is unchanged.")
 
-        except Exception as e:
-            st.error(f"3D visualization unavailable (internal error): {e}. The rest of the app is unchanged.")
+    # --- Tab 4: Theory & Assumptions (moved to last) ---
+    with tab4:
+        _build_theory_tab()
 
 def _build_solver_tab(stability_options):
     st.subheader("Point Concentration & $x_{max}$ Solver")
@@ -819,16 +758,16 @@ def _build_theory_tab():
         ***
         """, unsafe_allow_html=True)
 
-    # <-- Added detailed references & acknowledgments block (as in original) -->
+    # Restored reference & academic profiles block (with links)
     st.markdown(
         """
-        ***Primary Source Reference:*** *These notes are adapted from the lecture materials on Gaussian Plumes by E. Savory, available at [eng.uwo.ca/people/esavory/gaussian plumes.pdf](https://www.eng.uwo.ca/people/esavory/gaussian%20plumes.pdf).*
-
+        ***Primary Source Reference:*** *These notes are adapted from the lecture materials on Gaussian Plumes by E. Savory, available at* [eng.uwo.ca/people/esavory/gaussian plumes.pdf](https://www.eng.uwo.ca/people/esavory/gaussian%20plumes.pdf).
+        
         For further study and reference on Environmental Engineering and dispersion modeling, you may consult the work and class notes of:
 
-        **Dr. Abhradeep Majumder, Ph.D.**
-        * Assistant Professor, Department of Civil Engineering, BITS Pilani-Hyderabad Campus
-        * Academic Profiles: [Scopus](https://www.scopus.com/authid/detail.uri?authorId=57191504507), [ORCID](https://orcid.org/0000-0002-0186-6450), [Google Scholar](https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao), [LinkedIn](https://linkedin.com/in/abhradeep-majumder-36503777/)
+        **Dr. Abhradeep Majumder, Ph.D.**  
+        Assistant Professor, Department of Civil Engineering, BITS Pilani-Hyderabad Campus  
+        Academic Profiles: [Scopus](https://www.scopus.com/authid/detail.uri?authorId=57191504507), [ORCID](https://orcid.org/0000-0002-0186-6450), [Google Scholar](https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao), [LinkedIn](https://linkedin.com/in/abhradeep-majumder-36503777/)
 
         ---
         ###### Application Development
