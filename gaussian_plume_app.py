@@ -24,7 +24,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-App_Version = "2026-05-03"
+APP_VERSION = "2026-05-03"
 
 try:
     import imageio
