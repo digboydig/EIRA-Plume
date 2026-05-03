@@ -19,11 +19,15 @@ import io
 import os
 from typing import Tuple
 
-import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+
+try:
+    import imageio
+except ImportError:
+    imageio = None
 
 # -------------------------
 # Configuration / Constants
@@ -53,6 +57,9 @@ def export_animation_to_mp4(frames_rgb, fps: int, out_path: str):
     Write frames (H,W,3) uint8 RGB numpy arrays to an MP4 using imageio.
     Returns the path to the written file.
     """
+    if imageio is None:
+        raise RuntimeError("MP4 export requires the optional 'imageio' package. Install it to enable animation export.")
+
     _ensure_dir(out_path)
     try:
         writer = imageio.get_writer(out_path, fps=fps, codec='libx264', format='ffmpeg', macro_block_size=None)
@@ -525,71 +532,177 @@ def _build_visualizer_tab(Q_g_s, H_m, U_m_s, stability_class, Z_RECEPTOR_M, stab
 
     # --- Tab 3: 3D Visualization (moved from previous Tab 4) ---
     with tab3:
-        st.subheader("3D Plume Surface (interactive)")
-        st.write("This interactive 3D surface shows concentration vs x and y at the selected receptor height. Use the rotating option to animate the camera.")
-        try:
-            # Reuse arrays computed above
-            surf_x = x_range  # shape (N_x,)
-            surf_y = y_range  # shape (N_y,)
-            # Use µg m^-3 for plotting consistency with contours
-            surf_z = C_ug_m3    # expected shape (len(y), len(x)) => (N_y, N_x)
-
-            # --- Robust shape/orientation check for surf arrays ---
-            surf_x = np.asarray(surf_x, dtype=float)
-            surf_y = np.asarray(surf_y, dtype=float)
-            surf_z = np.asarray(surf_z, dtype=float)
-            expected_shape = (surf_y.size, surf_x.size)
-            if surf_z.ndim != 2:
-                raise ValueError(f"surf_z must be 2D, got ndim={surf_z.ndim}")
-            if surf_z.shape == (surf_x.size, surf_y.size):
-                # common transpose mismatch - fix automatically
-                surf_z = surf_z.T
-            elif surf_z.shape != expected_shape:
-                # Attempt a safe reshape only if total elements match; otherwise raise
-                if surf_z.size == expected_shape[0] * expected_shape[1]:
-                    surf_z = surf_z.reshape(expected_shape)
-                else:
-                    raise ValueError(f"surf_z shape {surf_z.shape} is incompatible with expected {expected_shape}")
-
-            # Simple control: enable rotating animation (keeps this feature)
-            enable_rotate = st.checkbox("Enable rotating animation (adds Play button)", value=False)
-
-            # Build main 3D surface figure
-            fig3d = go.Figure(data=[go.Surface(x=surf_x, y=surf_y, z=surf_z, showscale=True, colorbar=dict(title="Concentration (µg m⁻³)"))])
-            fig3d.update_layout(
-                title=f"3D Concentration Surface at z = {Z_RECEPTOR_M} m",
-                scene=dict(xaxis_title='x (m)', yaxis_title='y (m)', zaxis_title='Concentration (µg m⁻³)'),
-                height=700,
-            )
-
-            # If rotating animation enabled: create frames that modify camera position
-            if enable_rotate:
-                angles = np.linspace(0, 360, 36, endpoint=False)
-                frames = []
-                for ang in angles:
-                    rad = np.deg2rad(ang)
-                    cam = dict(eye=dict(x=2.5 * np.cos(rad), y=2.5 * np.sin(rad), z=0.8))
-                    # Frame must include a layout with scene.camera
-                    frames.append(go.Frame(layout=dict(scene=dict(camera=cam))))
-                fig3d.frames = frames
-                fig3d.update_layout(
-                    updatemenus=[dict(type='buttons',
-                                      showactive=False,
-                                      y=1,
-                                      x=0.8,
-                                      xanchor='left',
-                                      yanchor='bottom',
-                                      pad=dict(t=45, r=10),
-                                      buttons=[dict(label='Play rotation', method='animate', args=[None, {"frame": {"duration": 100, "redraw": True}, "fromcurrent": True, "transition": {"duration": 0}}])])])
-            st.plotly_chart(fig3d, use_container_width=True)
-            st.caption("Rotate/zoom the 3D view with your mouse or touch. Hover shows values. Use the checkbox to play a rotating camera animation.")
-
-        except Exception as _e:
-            st.error(f"3D visualization unavailable (internal error): {_e}. The rest of the app is unchanged.")
+        _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class)
 
     # --- Tab 4: Theory & Assumptions (moved to last) ---
     with tab4:
         _build_theory_tab()
+
+def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
+    st.subheader("3D Plume Geometry")
+    st.markdown("Physical plume view with stack height, wind direction, centerline, sigma envelope, and downstream concentration slices.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        x_max_geom = st.slider("Downwind extent (m)", 500, 8000, 4000, step=250, key="geom_x_extent")
+    with c2:
+        n_slices = st.slider("Profile slices", 3, 10, 6, step=1, key="geom_slices")
+    with c3:
+        envelope_sigma = st.slider("Envelope sigma", 1.0, 4.0, 2.0, step=0.5, key="geom_sigma")
+    with c4:
+        slice_opacity = st.slider("Slice opacity", 0.15, 0.85, 0.45, step=0.05, key="geom_opacity")
+
+    show_envelope = st.checkbox("Show plume envelope", value=True, key="geom_show_envelope")
+    show_slice_contours = st.checkbox("Show profile contours", value=True, key="geom_show_contours")
+    show_legacy_surface = st.checkbox("Show concentration surface at selected height", value=False, key="geom_show_legacy")
+
+    try:
+        fig = go.Figure()
+
+        x_line = np.linspace(1.0, float(x_max_geom), 120)
+        sigma_y_line, sigma_z_line = get_dispersion_coefficients(x_line, stability_class)
+        y_extent = max(float(envelope_sigma * np.nanmax(sigma_y_line)), 100.0)
+        z_extent = max(float(H_m + envelope_sigma * np.nanmax(sigma_z_line)), float(H_m * 1.8), 150.0)
+
+        # Ground plane gives the geometry a physical reference.
+        gx = np.array([[0.0, float(x_max_geom)], [0.0, float(x_max_geom)]])
+        gy = np.array([[-y_extent, -y_extent], [y_extent, y_extent]])
+        gz = np.zeros_like(gx)
+        fig.add_trace(go.Surface(
+            x=gx, y=gy, z=gz,
+            surfacecolor=np.zeros_like(gx),
+            colorscale=[[0, "rgb(235,238,239)"], [1, "rgb(235,238,239)"]],
+            showscale=False,
+            opacity=0.35,
+            name="Ground plane",
+            hoverinfo="skip"
+        ))
+
+        fig.add_trace(go.Scatter3d(
+            x=[0, 0], y=[0, 0], z=[0, H_m],
+            mode="lines",
+            line=dict(color="firebrick", width=9),
+            name="Stack"
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=x_line, y=np.zeros_like(x_line), z=np.full_like(x_line, H_m),
+            mode="lines",
+            line=dict(color="royalblue", width=5),
+            name="Plume centerline"
+        ))
+        fig.add_trace(go.Cone(
+            x=[float(x_max_geom) * 0.12], y=[-y_extent * 0.78], z=[max(H_m * 0.35, 20.0)],
+            u=[1], v=[0], w=[0],
+            sizemode="absolute",
+            sizeref=max(float(x_max_geom) * 0.08, 80.0),
+            anchor="tail",
+            colorscale=[[0, "royalblue"], [1, "royalblue"]],
+            showscale=False,
+            name="Wind direction"
+        ))
+
+        if show_envelope:
+            theta = np.linspace(0.0, 2.0 * np.pi, 42)
+            X_env, T_env = np.meshgrid(x_line, theta)
+            sigma_y_env, sigma_z_env = get_dispersion_coefficients(X_env, stability_class)
+            Y_env = envelope_sigma * sigma_y_env * np.cos(T_env)
+            Z_env = H_m + envelope_sigma * sigma_z_env * np.sin(T_env)
+            Z_env = np.maximum(Z_env, 0.0)
+            fig.add_trace(go.Surface(
+                x=X_env, y=Y_env, z=Z_env,
+                surfacecolor=np.ones_like(X_env),
+                colorscale=[[0, "rgba(120,120,120,0.25)"], [1, "rgba(120,120,120,0.25)"]],
+                showscale=False,
+                opacity=0.24,
+                name=f"{envelope_sigma:g} sigma envelope",
+                hoverinfo="skip"
+            ))
+
+        slice_xs = np.linspace(max(50.0, float(x_max_geom) / (n_slices + 1)), float(x_max_geom), int(n_slices))
+        y_grid = np.linspace(-y_extent, y_extent, 70)
+        z_grid = np.linspace(0.0, z_extent, 60)
+        Yg, Zg = np.meshgrid(y_grid, z_grid)
+
+        all_slice_c = []
+        slice_payload = []
+        for x_slice in slice_xs:
+            Xg = np.full_like(Yg, float(x_slice))
+            C_slice = gaussian_plume_model(Xg, Yg, Zg, H_m, Q_g_s, U_m_s, stability_class) * 1e6
+            all_slice_c.append(C_slice)
+            slice_payload.append((Xg, Yg, Zg, C_slice))
+
+            sy, sz = get_dispersion_coefficients(float(x_slice), stability_class)
+            for sigma_level, color, width in [(1.0, "rgba(50,50,50,0.55)", 3), (2.0, "rgba(50,50,50,0.35)", 2)]:
+                y_ellipse = sigma_level * sy * np.cos(theta)
+                z_ellipse = np.maximum(H_m + sigma_level * sz * np.sin(theta), 0.0)
+                fig.add_trace(go.Scatter3d(
+                    x=np.full_like(theta, float(x_slice)),
+                    y=y_ellipse,
+                    z=z_ellipse,
+                    mode="lines",
+                    line=dict(color=color, width=width),
+                    name=f"{sigma_level:g} sigma profile" if x_slice == slice_xs[0] else None,
+                    showlegend=(x_slice == slice_xs[0]),
+                    hoverinfo="skip"
+                ))
+
+        max_c = max(float(np.nanmax(c)) for c in all_slice_c) if all_slice_c else 1.0
+        color_max = max(np.log10(max_c + 1.0), 1.0)
+
+        for idx, (Xg, Yg, Zg, C_slice) in enumerate(slice_payload):
+            color_values = np.log10(C_slice + 1.0)
+            fig.add_trace(go.Surface(
+                x=Xg, y=Yg, z=Zg,
+                surfacecolor=color_values,
+                cmin=0.0,
+                cmax=color_max,
+                colorscale="Viridis",
+                opacity=float(slice_opacity),
+                showscale=(idx == len(slice_payload) - 1),
+                colorbar=dict(title="log10(C+1)<br>µg m⁻³", len=0.6),
+                name=f"x = {float(Xg[0, 0]):.0f} m",
+                contours=dict(
+                    z=dict(show=show_slice_contours, color="rgba(20,20,20,0.35)", width=1)
+                )
+            ))
+
+        if show_legacy_surface:
+            x_surf = np.linspace(1.0, float(x_max_geom), 140)
+            y_surf = np.linspace(-y_extent, y_extent, 80)
+            Xs, Ys = np.meshgrid(x_surf, y_surf)
+            Cs = gaussian_plume_model(Xs, Ys, 0.0, H_m, Q_g_s, U_m_s, stability_class) * 1e6
+            z_scale = max(z_extent / max(float(np.nanmax(Cs)), 1.0), 1.0)
+            fig.add_trace(go.Surface(
+                x=Xs, y=Ys, z=Cs * z_scale,
+                surfacecolor=np.log10(Cs + 1.0),
+                colorscale="Plasma",
+                showscale=False,
+                opacity=0.35,
+                name="Ground concentration surface"
+            ))
+
+        fig.update_layout(
+            title=f"Slide-style plume geometry (Stability {stability_class}, H = {H_m:g} m, Q = {Q_g_s:g} g/s, U = {U_m_s:g} m/s)",
+            height=760,
+            margin=dict(l=0, r=0, t=55, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=0.01, xanchor="left", x=0.02),
+            scene=dict(
+                xaxis_title="Downwind distance x (m)",
+                yaxis_title="Crosswind distance y (m)",
+                zaxis_title="Height z (m)",
+                xaxis=dict(range=[0, float(x_max_geom)]),
+                yaxis=dict(range=[-y_extent, y_extent]),
+                zaxis=dict(range=[0, z_extent]),
+                aspectmode="manual",
+                aspectratio=dict(x=2.6, y=1.0, z=0.9),
+                camera=dict(eye=dict(x=1.7, y=-1.9, z=1.1))
+            )
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("The vertical curtains are Y-Z concentration profiles at fixed downwind distances. The translucent shell shows the selected sigma envelope around the plume centerline.")
+
+    except Exception as _e:
+        st.error(f"3D plume geometry unavailable (internal error): {_e}.")
 
 def _build_solver_tab(stability_options):
     st.subheader("Point Concentration & $x_{max}$ Solver")
