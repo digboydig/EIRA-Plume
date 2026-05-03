@@ -639,10 +639,44 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
             y=PipeY,
             z=PipeZ,
             surfacecolor=np.ones_like(PipeZ),
-            colorscale=[[0, "rgb(178,34,34)"], [1, "rgb(178,34,34)"]],
+            colorscale=[[0, "rgb(150,58,46)"], [1, "rgb(178,74,58)"]],
             showscale=False,
             opacity=0.95,
             name="Stack pipe",
+            hoverinfo="skip"
+        ))
+        brick_ring_x, brick_ring_y, brick_ring_z = [], [], []
+        for z_ring in np.linspace(0.0, float(H_m), 9):
+            brick_ring_x.extend((pipe_radius * np.cos(pipe_theta)).tolist() + [None])
+            brick_ring_y.extend((pipe_radius * np.sin(pipe_theta)).tolist() + [None])
+            brick_ring_z.extend(np.full_like(pipe_theta, z_ring).tolist() + [None])
+        fig.add_trace(go.Scatter3d(
+            x=brick_ring_x,
+            y=brick_ring_y,
+            z=brick_ring_z,
+            mode="lines",
+            line=dict(color="rgba(70,30,25,0.75)", width=2),
+            showlegend=False,
+            hoverinfo="skip"
+        ))
+        brick_seam_x, brick_seam_y, brick_seam_z = [], [], []
+        brick_rows = np.linspace(0.0, float(H_m), 9)
+        seam_angles = np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False)
+        for row_idx in range(len(brick_rows) - 1):
+            z0 = brick_rows[row_idx]
+            z1 = brick_rows[row_idx + 1]
+            angle_offset = (np.pi / 8.0) if row_idx % 2 else 0.0
+            for seam_angle in seam_angles + angle_offset:
+                brick_seam_x.extend([pipe_radius * np.cos(seam_angle), pipe_radius * np.cos(seam_angle), None])
+                brick_seam_y.extend([pipe_radius * np.sin(seam_angle), pipe_radius * np.sin(seam_angle), None])
+                brick_seam_z.extend([z0, z1, None])
+        fig.add_trace(go.Scatter3d(
+            x=brick_seam_x,
+            y=brick_seam_y,
+            z=brick_seam_z,
+            mode="lines",
+            line=dict(color="rgba(70,30,25,0.55)", width=1.5),
+            showlegend=False,
             hoverinfo="skip"
         ))
         fig.add_trace(go.Scatter3d(
@@ -715,7 +749,22 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
             slice_payload.append((Xg, Yg, Zg, C_slice))
 
             sy, sz = get_dispersion_coefficients(float(x_slice), stability_class)
-            for sigma_level, color, width in [(1.0, "rgba(50,50,50,0.55)", 3), (2.0, "rgba(50,50,50,0.35)", 2)]:
+            if show_slice_contours:
+                for contour_sigma in [0.5, 1.0, 1.5, 2.0, 2.5]:
+                    y_contour = contour_sigma * sy * np.cos(theta)
+                    z_contour = np.maximum(H_m + contour_sigma * sz * np.sin(theta), 0.0)
+                    fig.add_trace(go.Scatter3d(
+                        x=np.full_like(theta, float(x_slice)),
+                        y=y_contour,
+                        z=z_contour,
+                        mode="lines",
+                        line=dict(color="rgba(165,35,35,0.42)", width=2),
+                        name="Profile contours" if is_first_slice and contour_sigma == 0.5 else None,
+                        showlegend=(is_first_slice and contour_sigma == 0.5),
+                        hoverinfo="skip"
+                    ))
+
+            for sigma_level, color, width in [(1.0, "rgba(50,50,50,0.65)", 3), (2.0, "rgba(50,50,50,0.42)", 2)]:
                 y_ellipse = sigma_level * sy * np.cos(theta)
                 z_ellipse = np.maximum(H_m + sigma_level * sz * np.sin(theta), 0.0)
                 fig.add_trace(go.Scatter3d(
