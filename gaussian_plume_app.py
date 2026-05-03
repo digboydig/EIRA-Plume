@@ -24,7 +24,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-APP_VERSION = "2026-05-03"
+APP_VERSION = "2026-05-03 geometry-fix-2"
 
 try:
     import imageio
@@ -685,6 +685,31 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
             line=dict(color="firebrick", width=9),
             name="Stack"
         ))
+        height_marker_y = -pipe_radius * 2.8
+        height_marker_x = -pipe_radius * 2.2
+        fig.add_trace(go.Scatter3d(
+            x=[height_marker_x, height_marker_x],
+            y=[height_marker_y, height_marker_y],
+            z=[0.0, float(H_m)],
+            mode="lines+text",
+            line=dict(color="black", width=3),
+            text=["", "H"],
+            textposition="middle right",
+            textfont=dict(color="black", size=16),
+            name="Height labels",
+            showlegend=False,
+            hoverinfo="skip"
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=[pipe_radius * 1.35],
+            y=[0.0],
+            z=[float(H_m) * 0.48],
+            mode="text",
+            text=["h"],
+            textfont=dict(color="black", size=16),
+            showlegend=False,
+            hoverinfo="skip"
+        ))
         fig.add_trace(go.Scatter3d(
             x=x_line, y=np.zeros_like(x_line), z=np.full_like(x_line, H_m),
             mode="lines",
@@ -738,6 +763,57 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
         y_grid = np.linspace(-y_extent, y_extent, 70)
         z_grid = np.linspace(0.0, z_extent, 60)
         Yg, Zg = np.meshgrid(y_grid, z_grid)
+
+        label_slice_x = float(slice_xs[min(len(slice_xs) // 2, len(slice_xs) - 1)])
+        label_sigma_y, label_sigma_z = get_dispersion_coefficients(label_slice_x, stability_class)
+        fig.add_trace(go.Scatter3d(
+            x=[label_slice_x, label_slice_x],
+            y=[0.0, float(label_sigma_y)],
+            z=[float(H_m), float(H_m)],
+            mode="lines+text",
+            line=dict(color="rgb(45,90,180)", width=4),
+            text=["", "σy"],
+            textposition="top center",
+            textfont=dict(color="rgb(45,90,180)", size=14),
+            name="σy",
+            showlegend=False,
+            hoverinfo="skip"
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=[label_slice_x, label_slice_x],
+            y=[float(label_sigma_y), float(label_sigma_y)],
+            z=[float(H_m), float(H_m + label_sigma_z)],
+            mode="lines+text",
+            line=dict(color="red", width=6),
+            text=["", "σz"],
+            textposition="middle right",
+            textfont=dict(color="red", size=16),
+            name="σz",
+            showlegend=False,
+            hoverinfo="skip"
+        ))
+        cap_half_width = max(float(label_sigma_y) * 0.12, y_extent * 0.015)
+        fig.add_trace(go.Scatter3d(
+            x=[label_slice_x, label_slice_x, None, label_slice_x, label_slice_x],
+            y=[
+                float(label_sigma_y) - cap_half_width,
+                float(label_sigma_y) + cap_half_width,
+                None,
+                float(label_sigma_y) - cap_half_width,
+                float(label_sigma_y) + cap_half_width,
+            ],
+            z=[
+                float(H_m),
+                float(H_m),
+                None,
+                float(H_m + label_sigma_z),
+                float(H_m + label_sigma_z),
+            ],
+            mode="lines",
+            line=dict(color="red", width=4),
+            showlegend=False,
+            hoverinfo="skip"
+        ))
 
         all_slice_c = []
         slice_payload = []
