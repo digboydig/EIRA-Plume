@@ -545,7 +545,7 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
     st.subheader("3D Plume Geometry")
     st.markdown("Physical plume view with stack height, wind direction, centerline, sigma envelope, and downstream concentration slices.")
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         x_max_geom = st.slider("Downwind extent (m)", 500, 8000, 4000, step=250, key="geom_x_extent")
     with c2:
@@ -554,6 +554,8 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
         envelope_sigma = st.slider("Envelope sigma", 1.0, 4.0, 2.0, step=0.5, key="geom_sigma")
     with c4:
         slice_opacity = st.slider("Slice opacity", 0.15, 0.85, 0.45, step=0.05, key="geom_opacity")
+    with c5:
+        display_cutoff_pct = st.slider("Slice cutoff (%)", 0.0, 10.0, 1.0, step=0.5, key="geom_cutoff_pct")
 
     show_envelope = st.checkbox("Show plume envelope", value=True, key="geom_show_envelope")
     show_slice_contours = st.checkbox("Show profile contours", value=True, key="geom_show_contours")
@@ -566,6 +568,7 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
         sigma_y_line, sigma_z_line = get_dispersion_coefficients(x_line, stability_class)
         y_extent = max(float(envelope_sigma * np.nanmax(sigma_y_line)), 100.0)
         z_extent = max(float(H_m + envelope_sigma * np.nanmax(sigma_z_line)), float(H_m * 1.8), 150.0)
+        theta = np.linspace(0.0, 2.0 * np.pi, 42)
 
         # Ground plane gives the geometry a physical reference.
         gx = np.array([[0.0, float(x_max_geom)], [0.0, float(x_max_geom)]])
@@ -593,19 +596,23 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
             line=dict(color="royalblue", width=5),
             name="Plume centerline"
         ))
-        fig.add_trace(go.Cone(
-            x=[float(x_max_geom) * 0.12], y=[-y_extent * 0.78], z=[max(H_m * 0.35, 20.0)],
-            u=[1], v=[0], w=[0],
-            sizemode="absolute",
-            sizeref=max(float(x_max_geom) * 0.08, 80.0),
-            anchor="tail",
-            colorscale=[[0, "royalblue"], [1, "royalblue"]],
-            showscale=False,
+        wind_y = -y_extent * 0.78
+        wind_z = max(H_m * 0.35, 20.0)
+        wind_x0 = float(x_max_geom) * 0.08
+        wind_x1 = float(x_max_geom) * 0.32
+        fig.add_trace(go.Scatter3d(
+            x=[wind_x0, wind_x1],
+            y=[wind_y, wind_y],
+            z=[wind_z, wind_z],
+            mode="lines+text",
+            line=dict(color="royalblue", width=6),
+            text=["", "Wind direction ->"],
+            textposition="top center",
+            textfont=dict(color="royalblue", size=13),
             name="Wind direction"
         ))
 
         if show_envelope:
-            theta = np.linspace(0.0, 2.0 * np.pi, 42)
             X_env, T_env = np.meshgrid(x_line, theta)
             sigma_y_env, sigma_z_env = get_dispersion_coefficients(X_env, stability_class)
             Y_env = envelope_sigma * sigma_y_env * np.cos(T_env)
@@ -614,9 +621,9 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
             fig.add_trace(go.Surface(
                 x=X_env, y=Y_env, z=Z_env,
                 surfacecolor=np.ones_like(X_env),
-                colorscale=[[0, "rgba(120,120,120,0.25)"], [1, "rgba(120,120,120,0.25)"]],
+                colorscale=[[0, "rgb(150,150,150)"], [1, "rgb(150,150,150)"]],
                 showscale=False,
-                opacity=0.24,
+                opacity=0.18,
                 name=f"{envelope_sigma:g} sigma envelope",
                 hoverinfo="skip"
             ))
@@ -652,11 +659,19 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
 
         max_c = max(float(np.nanmax(c)) for c in all_slice_c) if all_slice_c else 1.0
         color_max = max(np.log10(max_c + 1.0), 1.0)
+        cutoff_value = max_c * float(display_cutoff_pct) / 100.0
 
         for idx, (Xg, Yg, Zg, C_slice) in enumerate(slice_payload):
+            visible_mask = C_slice >= cutoff_value
+            if display_cutoff_pct <= 0.0:
+                visible_mask = np.ones_like(C_slice, dtype=bool)
+            X_plot = np.where(visible_mask, Xg, np.nan)
+            Y_plot = np.where(visible_mask, Yg, np.nan)
+            Z_plot = np.where(visible_mask, Zg, np.nan)
             color_values = np.log10(C_slice + 1.0)
+            color_values = np.where(visible_mask, color_values, np.nan)
             fig.add_trace(go.Surface(
-                x=Xg, y=Yg, z=Zg,
+                x=X_plot, y=Y_plot, z=Z_plot,
                 surfacecolor=color_values,
                 cmin=0.0,
                 cmax=color_max,
