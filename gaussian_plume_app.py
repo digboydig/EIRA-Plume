@@ -8,7 +8,7 @@ Capabilities:
 - Cross-sectional views (X vs Z and Y vs Z) and summary metrics for quick assessment of peak ground impacts.
 
 Author: Subodh Purohit
-Motivation: Dr. Abhradeep Majumder, Ph.D
+Motivation: Dr. Abhradeep Majumder, Ph.D | Dr. Krishna C. Etika, Ph.D
 Purpose: Educational use only.
 """
 
@@ -911,6 +911,10 @@ def _build_theory_tab():
         **Dr. Abhradeep Majumder, Ph.D.**  
         Assistant Professor, Department of Civil Engineering, BITS Pilani-Hyderabad Campus  
         Academic Profiles: [Scopus](https://www.scopus.com/authid/detail.uri?authorId=57191504507), [ORCID](https://orcid.org/0000-0002-0186-6450), [Google Scholar](https://scholar.google.co.in/citations?user=mnJ5zdwAAAAJ&hl=en&oi=ao), [LinkedIn](https://linkedin.com/in/abhradeep-majumder-36503777/)
+
+        **Dr. Krishna C. Etika**  
+        Associate Professor, Department of Chemical Engineering, BITS Pilani, Pilani Campus  
+        Academic Profiles: [BITS Pilani](https://www.bits-pilani.ac.in/pilani/krishna-c-etika/), [LinkedIn](https://shorturl.at/P64gp)
 
         ---
         ###### Application Development
