@@ -24,7 +24,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-APP_VERSION = "2026-05-03 geometry-fix-2"
+APP_VERSION = "2026-05-03"
 
 try:
     import imageio
@@ -701,16 +701,6 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
             hoverinfo="skip"
         ))
         fig.add_trace(go.Scatter3d(
-            x=[pipe_radius * 1.35],
-            y=[0.0],
-            z=[float(H_m) * 0.48],
-            mode="text",
-            text=["h"],
-            textfont=dict(color="black", size=16),
-            showlegend=False,
-            hoverinfo="skip"
-        ))
-        fig.add_trace(go.Scatter3d(
             x=x_line, y=np.zeros_like(x_line), z=np.full_like(x_line, H_m),
             mode="lines",
             line=dict(color="royalblue", width=5),
@@ -770,12 +760,19 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
             x=[label_slice_x, label_slice_x],
             y=[0.0, float(label_sigma_y)],
             z=[float(H_m), float(H_m)],
-            mode="lines+text",
+            mode="lines",
             line=dict(color="rgb(45,90,180)", width=4),
-            text=["", "σy"],
-            textposition="top center",
-            textfont=dict(color="rgb(45,90,180)", size=14),
             name="σy",
+            showlegend=False,
+            hoverinfo="skip"
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=[label_slice_x],
+            y=[float(label_sigma_y) * 1.2],
+            z=[float(H_m) + z_extent * 0.035],
+            mode="text",
+            text=["σy"],
+            textfont=dict(color="rgb(45,90,180)", size=15),
             showlegend=False,
             hoverinfo="skip"
         ))
