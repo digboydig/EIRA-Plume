@@ -600,16 +600,27 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
         wind_z = max(H_m * 0.35, 20.0)
         wind_x0 = float(x_max_geom) * 0.08
         wind_x1 = float(x_max_geom) * 0.32
+        arrow_len = float(x_max_geom) * 0.035
+        arrow_spread = y_extent * 0.045
         fig.add_trace(go.Scatter3d(
             x=[wind_x0, wind_x1],
             y=[wind_y, wind_y],
             z=[wind_z, wind_z],
             mode="lines+text",
             line=dict(color="royalblue", width=6),
-            text=["", "Wind direction ->"],
+            text=["", "Wind direction"],
             textposition="top center",
             textfont=dict(color="royalblue", size=13),
             name="Wind direction"
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=[wind_x1 - arrow_len, wind_x1, wind_x1 - arrow_len],
+            y=[wind_y - arrow_spread, wind_y, wind_y + arrow_spread],
+            z=[wind_z, wind_z, wind_z],
+            mode="lines",
+            line=dict(color="royalblue", width=6),
+            showlegend=False,
+            hoverinfo="skip"
         ))
 
         if show_envelope:
