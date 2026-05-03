@@ -8,7 +8,7 @@ Capabilities:
 - Cross-sectional views (X vs Z and Y vs Z) and summary metrics for quick assessment of peak ground impacts.
 
 Author: Subodh Purohit
-Motivation: Dr. Abhradeep Majumder | Dr. Krishna C. Etika
+Motivation: Dr. Abhradeep Majumder, Dr. Krishna C. Etika
 Purpose: Educational use only.
 """
 
@@ -24,7 +24,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-APP_VERSION = "2026-05-03"
+APP_VERSION = "2026-05-03 geometry-fix-2"
 
 try:
     import imageio
@@ -584,8 +584,25 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
             hoverinfo="skip"
         ))
 
+        pipe_radius = max(y_extent * 0.025, 8.0)
+        pipe_theta = np.linspace(0.0, 2.0 * np.pi, 32)
+        pipe_z = np.linspace(0.0, float(H_m), 8)
+        PipeTheta, PipeZ = np.meshgrid(pipe_theta, pipe_z)
+        PipeX = pipe_radius * np.cos(PipeTheta)
+        PipeY = pipe_radius * np.sin(PipeTheta)
+        fig.add_trace(go.Surface(
+            x=PipeX,
+            y=PipeY,
+            z=PipeZ,
+            surfacecolor=np.ones_like(PipeZ),
+            colorscale=[[0, "rgb(178,34,34)"], [1, "rgb(178,34,34)"]],
+            showscale=False,
+            opacity=0.95,
+            name="Stack pipe",
+            hoverinfo="skip"
+        ))
         fig.add_trace(go.Scatter3d(
-            x=[0, 0], y=[0, 0], z=[0, H_m],
+            x=[None], y=[None], z=[None],
             mode="lines",
             line=dict(color="firebrick", width=9),
             name="Stack"
@@ -914,7 +931,7 @@ def _build_theory_tab():
 
         **Dr. Krishna C. Etika**  
         Associate Professor, Department of Chemical Engineering, BITS Pilani, Pilani Campus  
-        Academic Profiles: [BITS Pilani](https://www.bits-pilani.ac.in/pilani/krishna-c-etika/), [LinkedIn](https://shorturl.at/P64gp)
+        Academic Profiles: [BITS Pilani Profile](https://www.bits-pilani.ac.in/pilani/krishna-c-etika/), [LinkedIn](https://shorturl.at/P64gp)
 
         ---
         ###### Application Development
