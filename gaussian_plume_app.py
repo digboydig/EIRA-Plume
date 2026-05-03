@@ -24,7 +24,7 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-APP_VERSION = "2026-05-03 geometry-fix-2"
+App_Version = "2026-05-03"
 
 try:
     import imageio
@@ -44,6 +44,11 @@ SIGMA_COEFFS = {
         'B': [1.00, 1.00, 1.00, 1.00, 1.00, 1.00]
     },
     'index': {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5}
+}
+
+WIND_PROFILE_EXPONENTS = {
+    'Rough Surface (urban)': {'A': 0.15, 'B': 0.15, 'C': 0.20, 'D': 0.25, 'E': 0.30, 'F': 0.30},
+    'Smooth Surface (rural)': {'A': 0.07, 'B': 0.07, 'C': 0.10, 'D': 0.15, 'E': 0.35, 'F': 0.35},
 }
 
 # -------------------------
@@ -228,6 +233,14 @@ def find_max_concentration_custom_sigma_fixed_ratio(H, Q, U, stability_class):
     # Behavior preserved: fallback to find_max_concentration
     return find_max_concentration(H, Q, U, stability_class)
 
+def calculate_wind_speed_at_height(u_ref, z_ref, z_target, stability_class, surface_type):
+    """Power-law wind profile from slide 38: u/u1 = (z/z1)^p."""
+    p = WIND_PROFILE_EXPONENTS[surface_type][stability_class]
+    z_ref_safe = max(float(z_ref), 1e-6)
+    z_target_safe = max(float(z_target), 1e-6)
+    u_at_target = float(u_ref) * (z_target_safe / z_ref_safe) ** p
+    return u_at_target, p
+
 # -------------------------
 # UI Building Functions
 # -------------------------
@@ -244,12 +257,43 @@ def _sidebar_inputs():
 
     st.sidebar.subheader("2. Atmospheric Conditions")
     st.sidebar.markdown(r"Wind Speed ($U$, $\text{m/s}$)")
-    U_m_s = st.sidebar.slider('Hidden label', 1.0, 20.0, 5.0, step=0.5, key='U_slider', label_visibility='collapsed')
+    U_m_s_input = st.sidebar.slider('Hidden label', 1.0, 20.0, 5.0, step=0.5, key='U_slider', label_visibility='collapsed')
 
     stability_options = {'A': 'A - Extremely Unstable', 'B': 'B - Moderately Unstable', 'C': 'C - Slightly Unstable',
                          'D': 'D - Neutral (Overcast/High Wind)', 'E': 'E - Slightly Stable', 'F': 'F - Moderately Stable'}
     stability_class = st.sidebar.selectbox("Atmospheric Stability Class", options=list(stability_options.keys()),
                                          format_func=lambda x: stability_options[x], index=3, key='stability_slider')
+
+    use_wind_profile = st.sidebar.checkbox(
+        "Estimate stack-height wind speed using power law",
+        value=False,
+        help="Use slide 38: u/u1 = (z/z1)^p. When enabled, the wind speed above is treated as the reference wind speed."
+    )
+
+    if use_wind_profile:
+        wind_surface = st.sidebar.selectbox(
+            "Surface roughness",
+            options=list(WIND_PROFILE_EXPONENTS.keys()),
+            index=0,
+            key="wind_profile_surface"
+        )
+        wind_ref_height = st.sidebar.number_input(
+            "Reference wind height z1 (m)",
+            min_value=0.1,
+            value=10.0,
+            step=1.0,
+            key="wind_profile_ref_height"
+        )
+        U_m_s, wind_exponent = calculate_wind_speed_at_height(
+            U_m_s_input, wind_ref_height, H_m, stability_class, wind_surface
+        )
+        st.sidebar.info(
+            f"Using stack-height wind speed: U({H_m:.0f} m) = {U_m_s:.2f} m/s "
+            f"from U({wind_ref_height:.0f} m) = {U_m_s_input:.2f} m/s, p = {wind_exponent:.2f}."
+        )
+    else:
+        U_m_s = U_m_s_input
+        st.sidebar.caption("Using entered wind speed directly as the model wind speed.")
 
     st.sidebar.subheader("3. Visualization Plane (z)")
     use_custom_z = st.sidebar.checkbox(r"Visualize at a Custom Height ($z$)", value=False,
@@ -284,8 +328,8 @@ def _build_visualizer_tab(Q_g_s, H_m, U_m_s, stability_class, Z_RECEPTOR_M, stab
     st.caption(f"App version: {APP_VERSION}")
     st.markdown("An interactive model to explore how source parameters and atmospheric stability affect pollutant spread and ground-level concentration.")
 
-    # New tab order: Plume Visualizer, Problem Solver, 3D Visualization, Theory & Assumptions
-    tab1, tab2, tab3, tab4 = st.tabs(["Plume Visualizer", "Problem Solver", "3D Visualization", "Theory & Assumptions"])
+    # Tab order: Plume Visualizer, 3D Visualization, Problem Solver, Theory & Assumptions
+    tab1, tab2, tab3, tab4 = st.tabs(["Plume Visualizer", "3D Visualization", "Problem Solver", "Theory & Assumptions"])
 
     # --- Tab 1: Plume Visualizer ---
     with tab1:
@@ -529,13 +573,13 @@ def _build_visualizer_tab(Q_g_s, H_m, U_m_s, stability_class, Z_RECEPTOR_M, stab
         else:
             st.info("Plume maximum could not be calculated. Ensure H is not too large or Q is not too small.")
 
-    # --- Tab 2: Problem Solver ---
+    # --- Tab 2: 3D Visualization ---
     with tab2:
-        _build_solver_tab(stability_options)
-
-    # --- Tab 3: 3D Visualization (moved from previous Tab 4) ---
-    with tab3:
         _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class)
+
+    # --- Tab 3: Problem Solver ---
+    with tab3:
+        _build_solver_tab(stability_options)
 
     # --- Tab 4: Theory & Assumptions (moved to last) ---
     with tab4:
@@ -917,6 +961,36 @@ def _build_theory_tab():
 
         ***
         """, unsafe_allow_html=True)
+
+    st.markdown("### Wind Velocity and Turbulence")
+    st.markdown(
+        """
+        The mean wind speed variation with altitude in the planetary boundary layer can be estimated using the empirical power law:
+        """
+    )
+    st.latex(r"\frac{u}{u_1} = \left(\frac{z}{z_1}\right)^p")
+    st.markdown(
+        """
+        Where $u$ is the wind speed at altitude $z$, $u_1$ is the reference wind speed at altitude $z_1$, and $p$ depends on atmospheric stability and surface roughness.
+
+        In the Gaussian plume equation, $U$ should represent the wind speed at the effective stack height. Field wind measurements are commonly reported near 10 m above ground level, so the app includes an optional sidebar correction that estimates $U(H)$ from a reference wind speed:
+        """
+    )
+    st.latex(r"U(H) = U(z_1)\left(\frac{H}{z_1}\right)^p")
+    st.markdown(
+        """
+        When this option is enabled, the entered wind speed is treated as the reference speed $U(z_1)$ and the calculated stack-height wind speed $U(H)$ is used in all plume concentration calculations. Because concentration is inversely proportional to $U$, larger stack-height wind speeds generally reduce predicted concentrations, all else being equal.
+        """
+    )
+    wind_profile_table = {
+        "Stability Class": ["A", "B", "C", "D", "E", "F"],
+        "p - Rough Surface (urban)": [0.15, 0.15, 0.20, 0.25, 0.30, 0.30],
+        "p - Smooth Surface (rural)": [0.07, 0.07, 0.10, 0.15, 0.35, 0.35],
+    }
+    st.table(wind_profile_table)
+    st.caption("The wind-profile correction is an empirical approximation. It does not replace site-specific meteorological profiling or regulatory dispersion model preprocessing.")
+
+    st.markdown("***")
 
     # Restored reference & academic profiles block (with links)
     st.markdown(
