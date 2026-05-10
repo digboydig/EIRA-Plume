@@ -583,29 +583,131 @@ def _pt_centreline(plume_key, H, Q, U, mixing_height, mix_layer_h):
 
 @st.cache_data
 def _pt_thumbnail(plume_key, mixing_height=300, mix_layer_h=150):
-    """Small dark X-Z thumbnail for gallery cards. Returns PNG bytes."""
-    x_arr, z_arr, C_ug = _pt_xz_field(plume_key, 80, 100, 4, mixing_height, mix_layer_h)
+    """
+    Schematic line-art thumbnail for gallery cards.
+    Each plume type is drawn as a characteristic shape — no model computation.
+    Returns PNG bytes.
+    """
+    BG = '#111827'
     fig, ax = plt.subplots(figsize=(2.8, 1.4))
-    fig.patch.set_facecolor('#111827')
-    ax.set_facecolor('#111827')
-    vmax = float(np.nanpercentile(C_ug[C_ug > 0], 95)) if np.any(C_ug > 0) else 1.0
-    ax.contourf(x_arr, z_arr, C_ug, levels=10, cmap='viridis', vmin=0.0, vmax=vmax)
-    ax.axhline(80, color='white', lw=0.7, linestyle='--', alpha=0.45)
-    ax.plot(0, 80, 'r^', ms=4, clip_on=False)
-    p = _PLUME_KEY_MAP[plume_key]
-    if p['model'] == 'trapping':
-        ax.axhline(mixing_height, color='#ff6b6b', lw=0.8, linestyle=':', alpha=0.7)
-    if p['model'] == 'fumigating':
-        ax.axhline(mix_layer_h, color='#f1c40f', lw=0.8, linestyle=':', alpha=0.7)
-    ax.set_xlim(0, 3000)
-    ax.set_ylim(z_arr[0], z_arr[-1])
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(BG)
+
+    x = np.linspace(0.0, 1.0, 300)
+    H0 = 0.46      # normalised stack height
+    GROUND = 0.04  # normalised ground level
+
+    # ── Stack marker (common) ────────────────────────────────────────────────
+    ax.plot([0, 0], [GROUND, H0], color='#9ca3af', lw=1.6, solid_capstyle='round')
+    ax.plot(0, H0, marker='^', ms=5, color='#ef4444', zorder=6)
+
+    # ── Per-type drawing ─────────────────────────────────────────────────────
+    if plume_key == 'looping':
+        # Sinusoidal centerline with growing amplitude and width
+        amp   = np.linspace(0, 0.20, len(x))
+        phase = 4.5 * np.pi * x
+        center = H0 + amp * np.sin(phase)
+        width  = 0.035 + 0.065 * x
+        ax.fill_between(x, center - width, center + width,
+                        color='#3b82f6', alpha=0.55, zorder=2)
+        ax.plot(x, center + width, color='#93c5fd', lw=0.9, alpha=0.8)
+        ax.plot(x, center - width, color='#93c5fd', lw=0.9, alpha=0.8)
+        # Extra faint wisps to suggest turbulent mixing
+        for ph_off, col_a in [(-0.9, 0.22), (1.1, 0.18), (-2.0, 0.14)]:
+            wc = H0 + (amp * 0.55) * np.sin(phase + ph_off)
+            ax.plot(x[x > 0.15], wc[x > 0.15], color='#bfdbfe', lw=0.6, alpha=col_a)
+
+    elif plume_key == 'coning':
+        spread = 0.24 * x
+        ax.fill_between(x, H0 - spread, H0 + spread, color='#f97316', alpha=0.50, zorder=2)
+        ax.plot(x, H0 + spread, color='#fb923c', lw=1.2)
+        ax.plot(x, H0 - spread, color='#fb923c', lw=1.2)
+        # Faint iso-concentration rings
+        for frac, a in [(0.5, 0.25), (0.25, 0.15)]:
+            s2 = frac * 0.24 * x
+            ax.fill_between(x, H0 - s2, H0 + s2, color='#fed7aa', alpha=a, zorder=3)
+
+    elif plume_key == 'fanning':
+        spread = 0.025 + 0.018 * x  # very thin
+        ax.fill_between(x, H0 - spread, H0 + spread, color='#60a5fa', alpha=0.65, zorder=2)
+        ax.plot(x, H0 + spread, color='#93c5fd', lw=1.1)
+        ax.plot(x, H0 - spread, color='#93c5fd', lw=1.1)
+        # Dashed centreline emphasises how flat the plume is
+        ax.plot(x, np.full_like(x, H0), color='white', lw=0.5,
+                linestyle='--', alpha=0.30, zorder=4)
+        # Ground dashed line (stable at night, no mixing down)
+        ax.axhline(GROUND, color='#475569', lw=0.8, linestyle=':', alpha=0.6)
+
+    elif plume_key == 'neutral':
+        spread = 0.155 * x
+        ax.fill_between(x, H0 - spread, H0 + spread, color='#94a3b8', alpha=0.50, zorder=2)
+        ax.plot(x, H0 + spread, color='#cbd5e1', lw=1.2)
+        ax.plot(x, H0 - spread, color='#cbd5e1', lw=1.2)
+        s2 = 0.07 * x
+        ax.fill_between(x, H0 - s2, H0 + s2, color='#e2e8f0', alpha=0.18, zorder=3)
+
+    elif plume_key == 'lofting':
+        # Plume fans upward only; tiny downward extent (stable surface layer blocks it)
+        upper = H0 + 0.28 * x
+        lower = H0 - 0.025 * x     # barely any downward spread
+        ax.fill_between(x, lower, upper, color='#34d399', alpha=0.50, zorder=2)
+        ax.plot(x, upper, color='#6ee7b7', lw=1.2)
+        ax.plot(x, lower, color='#6ee7b7', lw=0.7, linestyle='--')
+        # Stable surface layer (shaded band near the ground)
+        stable_top = H0 - 0.16
+        ax.fill_between(x, GROUND, stable_top,
+                        color='#1e3a5f', alpha=0.55, zorder=1)
+        ax.plot(x, np.full_like(x, stable_top),
+                color='#fbbf24', lw=0.9, linestyle=':', alpha=0.80)
+
+    elif plume_key == 'fumigating':
+        mix_h_n = 0.36   # mixing layer in normalised coords
+        x_onset = 0.28   # where fumigation kicks in
+        # Before fumigation onset: small elevated gaussian
+        xb = x[x <= x_onset]
+        sb = 0.035 + 0.03 * xb
+        ax.fill_between(xb, H0 - sb, H0 + sb, color='#fbbf24', alpha=0.55, zorder=2)
+        ax.plot(xb, H0 + sb, color='#fde68a', lw=1.0)
+        ax.plot(xb, H0 - sb, color='#fde68a', lw=1.0)
+        # After onset: uniform fill from ground to mixing height (well-mixed)
+        xa = x[x > x_onset]
+        ax.fill_between(xa, GROUND, mix_h_n, color='#f59e0b', alpha=0.48, zorder=2)
+        ax.plot(xa, np.full_like(xa, mix_h_n), color='#fcd34d', lw=1.1, linestyle='--')
+        # Small downward arrows showing convective mixing
+        for xp in [0.42, 0.58, 0.74, 0.90]:
+            ax.annotate('', xy=(xp, GROUND + 0.06), xytext=(xp, mix_h_n - 0.04),
+                        arrowprops=dict(arrowstyle='->', color='#fde68a',
+                                        lw=0.7, mutation_scale=6))
+        # Mixing layer label line at onset
+        ax.axvline(x_onset, color='#fbbf24', lw=0.7, linestyle=':', alpha=0.5)
+
+    elif plume_key == 'trapping':
+        lid_h = 0.80   # inversion lid in normalised coords
+        spread = np.minimum(0.24 * x, (lid_h - GROUND) / 2.0)
+        upper  = np.minimum(H0 + spread, lid_h - 0.01)
+        lower  = np.maximum(H0 - spread, GROUND + 0.01)
+        ax.fill_between(x, lower, upper, color='#a78bfa', alpha=0.52, zorder=2)
+        ax.plot(x, upper, color='#c4b5fd', lw=0.8)
+        ax.plot(x, lower, color='#c4b5fd', lw=0.8)
+        # The plume fills the full trapped column far downwind
+        far = x > 0.68
+        ax.fill_between(x[far], GROUND, lid_h, color='#7c3aed', alpha=0.22, zorder=3)
+        # Inversion lid — prominent dashed red line
+        ax.axhline(lid_h, color='#f87171', lw=1.6, linestyle='--', alpha=0.90, zorder=5)
+        # Ground
+        ax.axhline(GROUND, color='#6b7280', lw=0.9, alpha=0.55)
+
+    # ── Shared axis cleanup ──────────────────────────────────────────────────
+    ax.set_xlim(-0.03, 1.02)
+    ax.set_ylim(0.0, 1.0)
     ax.set_xticks([])
     ax.set_yticks([])
     for sp in ax.spines.values():
         sp.set_visible(False)
-    fig.tight_layout(pad=0.1)
+
+    fig.tight_layout(pad=0.08)
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=80, bbox_inches='tight', facecolor='#111827')
+    fig.savefig(buf, format='png', dpi=88, bbox_inches='tight', facecolor=BG)
     plt.close(fig)
     buf.seek(0)
     return buf.read()
