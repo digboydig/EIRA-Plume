@@ -241,6 +241,99 @@ def calculate_wind_speed_at_height(u_ref, z_ref, z_target, stability_class, surf
     u_at_target = float(u_ref) * (z_target_safe / z_ref_safe) ** p
     return u_at_target, p
 
+def correct_wind_to_surface(u_H: float, H: float, p: float = 0.25) -> float:
+    """
+    Convert wind speed measured at stack height H to the 10 m surface reference
+    using the power-law profile:  u_0 = u_H * (10 / H)^p
+
+    Parameters
+    ----------
+    u_H : wind speed at stack altitude H (m/s)
+    H   : stack height above ground (m)
+    p   : wind shear exponent (default 0.25, typical neutral/standard)
+
+    Returns
+    -------
+    u_0 : equivalent 10 m surface wind speed (m/s)
+    """
+    if H <= 0:
+        return float(u_H)
+    return float(u_H) * (10.0 / float(H)) ** float(p)
+
+# -------------------------
+# Pasquill–Gifford Stability Table
+# -------------------------
+# Source: Pasquill (1961) / Gifford (1961), as tabulated in standard references.
+# Rows = surface wind speed bins; columns = daytime solar radiation or
+# night-time cloud cover.  Mixed entries (e.g. "A-B") are resolved to the more
+# stable single class for computation (conservative choice).
+
+_PG_DAY = {
+    # (wind_bin, solar_radiation) -> (table_label, resolved_class)
+    #   solar_radiation: 'strong' | 'moderate' | 'slight'
+    (0, 'strong'):   ('A',   'A'),
+    (0, 'moderate'): ('A-B', 'B'),
+    (0, 'slight'):   ('B',   'B'),
+    (1, 'strong'):   ('A-B', 'B'),
+    (1, 'moderate'): ('B',   'B'),
+    (1, 'slight'):   ('C',   'C'),
+    (2, 'strong'):   ('B',   'B'),
+    (2, 'moderate'): ('B-C', 'C'),
+    (2, 'slight'):   ('C',   'C'),
+    (3, 'strong'):   ('C',   'C'),
+    (3, 'moderate'): ('C-D', 'D'),
+    (3, 'slight'):   ('D',   'D'),
+    (4, 'strong'):   ('C',   'C'),
+    (4, 'moderate'): ('D',   'D'),
+    (4, 'slight'):   ('D',   'D'),
+}
+
+_PG_NIGHT = {
+    # (wind_bin, cloudiness) -> (table_label, resolved_class)
+    #   cloudiness: 'cloudy' (≥4/8) | 'clear' (<3/8)
+    (0, 'cloudy'): ('E', 'E'),
+    (0, 'clear'):  ('F', 'F'),
+    (1, 'cloudy'): ('E', 'E'),
+    (1, 'clear'):  ('F', 'F'),
+    (2, 'cloudy'): ('D', 'D'),
+    (2, 'clear'):  ('E', 'E'),
+    (3, 'cloudy'): ('D', 'D'),
+    (3, 'clear'):  ('D', 'D'),
+    (4, 'cloudy'): ('D', 'D'),
+    (4, 'clear'):  ('D', 'D'),
+}
+
+def _wind_bin(u_surface: float) -> int:
+    """Map surface wind speed (m/s) to PG table row index (0–4)."""
+    if u_surface < 2:   return 0
+    if u_surface < 3:   return 1
+    if u_surface < 5:   return 2
+    if u_surface <= 6:  return 3
+    return 4
+
+def determine_stability_class(u_surface: float, time_of_day: str, condition: str):
+    """
+    Look up Pasquill-Gifford stability class from surface wind speed and
+    atmospheric conditions.
+
+    Parameters
+    ----------
+    u_surface   : surface (10 m) wind speed (m/s)
+    time_of_day : 'day' or 'night'
+    condition   : for day   → 'strong' | 'moderate' | 'slight'
+                  for night → 'cloudy' | 'clear'
+
+    Returns
+    -------
+    (table_label, resolved_class)
+        table_label    : raw entry, e.g. "A-B"
+        resolved_class : single letter used for σ calculations, e.g. "B"
+    """
+    wb = _wind_bin(float(u_surface))
+    if time_of_day == 'day':
+        return _PG_DAY.get((wb, condition), ('D', 'D'))
+    return _PG_NIGHT.get((wb, condition), ('D', 'D'))
+
 # -------------------------
 # UI Building Functions
 # -------------------------
@@ -919,115 +1012,503 @@ def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
 
 def _build_solver_tab(stability_options):
     st.subheader("Point Concentration & $x_{max}$ Solver")
-    st.markdown("Calculate concentrations and the maximum ground-level location using **custom parameters** independent of the visualizer's sidebar.")
+    st.markdown(
+        "Solve for concentration at any receptor point using **custom parameters** "
+        "independent of the sidebar. Includes wind-speed height correction and "
+        "automatic Pasquill–Gifford stability class determination."
+    )
 
-    st.subheader("1. Dispersion Mode")
-    dispersion_mode = st.radio("Choose Dispersion Coefficient Source:", ('Pasquill-Gifford Curves (default)', 'Custom $\\sigma_y$ and $\\sigma_z$ Input'), index=0, key='dispersion_mode')
+    # ── Notation guide ───────────────────────────────────────────────────────
+    with st.expander("ℹ️  Problem notation guide — C(x, y, z, H)", expanded=False):
+        st.markdown(
+            r"""
+            Problems are often stated as **C(x, y, z, H)** where all four coordinates are given:
+
+            | Symbol | Meaning | Typical example |
+            |--------|---------|-----------------|
+            | $x$ | Downwind distance from stack (m) | 1000 m |
+            | $y$ | Crosswind offset from centreline (m) | 50 m |
+            | $z$ | Receptor height above ground (m) | 0 m (ground level) |
+            | $H$ | **Effective** stack height = physical height + plume rise Δh (m) | 250 m |
+
+            *Example: "Estimate SO₂ concentration at (1000, 50, 0, 250)"
+            → x = 1000 m, y = 50 m, z = 0 m, H = 250 m*
+            """
+        )
+
+    st.markdown("---")
+
+    # ── 1. Dispersion coefficient source ─────────────────────────────────────
+    st.subheader("1. Dispersion Coefficient Source")
+    dispersion_mode = st.radio(
+        "Choose how dispersion coefficients are obtained:",
+        ('Pasquill-Gifford Curves (default)', 'Custom $\\sigma_y$ and $\\sigma_z$ Input'),
+        index=0, key='dispersion_mode'
+    )
     use_custom_sigma = (dispersion_mode == 'Custom $\\sigma_y$ and $\\sigma_z$ Input')
 
     if use_custom_sigma:
-        st.warning("When using custom $\\sigma$ values, the maximum concentration ($x_{max}$) calculation is not meaningful as $\\sigma$ is fixed, not distance-dependent.")
+        st.warning(
+            "With fixed custom σ values the $x_{max}$ calculation is not meaningful "
+            "because σ is distance-independent."
+        )
         colS1, colS2 = st.columns(2)
         with colS1:
-            solver_sigma_y = st.number_input("Custom $\\sigma_y$ (Lateral, m)", min_value=0.1, value=100.0, step=10.0, key='sigma_y_solver')
+            solver_sigma_y = st.number_input(
+                "Custom $\\sigma_y$ (Lateral, m)", min_value=0.1, value=100.0,
+                step=10.0, key='sigma_y_solver'
+            )
         with colS2:
-            solver_sigma_z = st.number_input("Custom $\\sigma_z$ (Vertical, m)", min_value=0.1, value=50.0, step=5.0, key='sigma_z_solver')
-
-    st.subheader("2. Source & Atmospheric Parameters")
-    colA, colB, colC = st.columns(3)
-    with colA:
-        solver_Q = st.number_input("Emission Rate ($Q$, g/s)", min_value=1.0, value=100.0, step=10.0, key='Q_solver')
-    with colB:
-        solver_H = st.number_input("Effective Stack Height ($H$, m)", min_value=1.0, value=100.0, step=5.0, key='H_solver')
-    with colC:
-        solver_U = st.number_input("Wind Speed ($U$, m/s)", min_value=0.1, value=5.0, step=0.5, key='U_solver')
-
-    if not use_custom_sigma:
-        solver_stab_class = st.selectbox("4. Atmospheric Stability Class", options=list(stability_options.keys()), format_func=lambda x: stability_options[x], index=3, key='stability_solver_key')
+            solver_sigma_z = st.number_input(
+                "Custom $\\sigma_z$ (Vertical, m)", min_value=0.1, value=50.0,
+                step=5.0, key='sigma_z_solver'
+            )
     else:
-        solver_stab_class = 'D'
+        solver_sigma_y = None
+        solver_sigma_z = None
 
     st.markdown("---")
-    st.subheader("3. Point Location Input")
+
+    # ── 2. Source parameters ──────────────────────────────────────────────────
+    st.subheader("2. Source Parameters")
+    colA, colB = st.columns(2)
+    with colA:
+        solver_Q = st.number_input(
+            "Emission Rate ($Q$, g/s)", min_value=0.001, value=100.0,
+            step=10.0, format="%.3f", key='Q_solver'
+        )
+    with colB:
+        solver_H = st.number_input(
+            "Effective Stack Height ($H$, m)", min_value=1.0, value=100.0,
+            step=5.0, key='H_solver'
+        )
+
+    st.markdown("---")
+
+    # ── 3. Wind speed ─────────────────────────────────────────────────────────
+    st.subheader("3. Wind Speed")
+    wind_input_mode = st.radio(
+        "Wind speed measurement reference:",
+        (
+            "At 10 m surface (use directly)",
+            "At stack altitude → convert DOWN to surface (power law, fixed p)",
+            "At reference height → convert UP to stack height (power law, class-based p)",
+        ),
+        index=0, key='wind_input_mode'
+    )
+
+    if wind_input_mode == "At 10 m surface (use directly)":
+        solver_U_surface = st.number_input(
+            "Surface Wind Speed $U_{10}$ (m/s)",
+            min_value=0.1, value=5.0, step=0.5, key='U_solver_surface'
+        )
+        solver_U_model = solver_U_surface
+        wind_p_used = None
+        wind_correction_info = None
+
+    elif wind_input_mode == "At stack altitude → convert DOWN to surface (power law, fixed p)":
+        colW1, colW2 = st.columns(2)
+        with colW1:
+            solver_U_stack = st.number_input(
+                "Wind Speed at Stack Altitude $u_H$ (m/s)",
+                min_value=0.1, value=6.0, step=0.5, key='U_solver_stack'
+            )
+        with colW2:
+            wind_p_used = st.number_input(
+                "Wind Shear Exponent $p$",
+                min_value=0.05, max_value=0.60, value=0.25, step=0.05,
+                help="Typical values: 0.07–0.15 (unstable), 0.25 (neutral), 0.30–0.35 (stable).",
+                key='wind_p_solver'
+            )
+        solver_U_surface = correct_wind_to_surface(solver_U_stack, float(solver_H), float(wind_p_used))
+        solver_U_model = solver_U_surface
+        wind_correction_info = {
+            'mode': 'stack_to_surface',
+            'u_in': solver_U_stack, 'H': float(solver_H),
+            'p': float(wind_p_used), 'u_out': solver_U_surface
+        }
+        st.info(
+            f"**Surface wind:**  "
+            f"$u_0 = u_H \\times (10/H)^p = {solver_U_stack:.2f} "
+            f"\\times (10/{solver_H:.0f})^{{{wind_p_used:.2f}}} = "
+            f"\\mathbf{{{solver_U_surface:.3f}}}$ **m/s**"
+        )
+
+    else:  # reference height → stack height
+        colW1, colW2, colW3 = st.columns(3)
+        with colW1:
+            solver_U_ref = st.number_input(
+                "Reference Wind Speed $u_1$ (m/s)",
+                min_value=0.1, value=5.0, step=0.5, key='U_solver_ref'
+            )
+        with colW2:
+            solver_z_ref = st.number_input(
+                "Reference Height $z_1$ (m)",
+                min_value=0.1, value=10.0, step=1.0, key='z_ref_solver'
+            )
+        with colW3:
+            wind_surface_type = st.selectbox(
+                "Surface type",
+                options=list(WIND_PROFILE_EXPONENTS.keys()),
+                index=0, key='wind_surface_solver'
+            )
+        # Need stability class for class-based p — use a provisional selection
+        prov_stab = st.selectbox(
+            "Stability class for p (provisional — used only for wind correction)",
+            options=list(stability_options.keys()),
+            format_func=lambda x: stability_options[x],
+            index=3, key='prov_stab_wind'
+        )
+        solver_U_model, wind_p_used = calculate_wind_speed_at_height(
+            solver_U_ref, float(solver_z_ref), float(solver_H), prov_stab, wind_surface_type
+        )
+        solver_U_surface = solver_U_ref
+        wind_correction_info = {
+            'mode': 'ref_to_stack',
+            'u_in': solver_U_ref, 'z_ref': float(solver_z_ref),
+            'H': float(solver_H), 'p': float(wind_p_used), 'u_out': solver_U_model
+        }
+        st.info(
+            f"**Stack-height wind:**  "
+            f"$U(H) = U(z_1)\\,(H/z_1)^p = {solver_U_ref:.2f}"
+            f"\\times({solver_H:.0f}/{solver_z_ref:.0f})^{{{wind_p_used:.2f}}} = "
+            f"\\mathbf{{{solver_U_model:.3f}}}$ **m/s** (used in model)"
+        )
+
+    st.markdown("---")
+
+    # ── 4. Atmospheric stability class ────────────────────────────────────────
+    st.subheader("4. Atmospheric Stability Class")
+
+    if not use_custom_sigma:
+        stability_input_mode = st.radio(
+            "How to determine stability class:",
+            ("Manual selection", "Auto-determine from Pasquill–Gifford table"),
+            index=0, key='stability_input_mode'
+        )
+        auto_stability = (stability_input_mode == "Auto-determine from Pasquill–Gifford table")
+    else:
+        auto_stability = False
+
+    if not use_custom_sigma and auto_stability:
+        with st.expander("📋 Pasquill–Gifford Stability Table (reference)", expanded=True):
+            st.markdown(
+                """
+                | Surface Wind (m/s) | Day — Strong ☀️ | Day — Moderate 🌤 | Day — Slight 🌥 | Night — Cloudy ≥4/8 | Night — Clear <3/8 |
+                |--------------------|:---:|:---:|:---:|:---:|:---:|
+                | < 2  | A   | A–B | B | E | F |
+                | 2–3  | A–B | B   | C | E | F |
+                | 3–5  | B   | B–C | C | D | E |
+                | 5–6  | C   | C–D | D | D | D |
+                | > 6  | C   | D   | D | D | D |
+
+                *Mixed classes (e.g. A–B) are resolved to the more stable class for computation.*
+                """
+            )
+
+        colPG1, colPG2 = st.columns(2)
+        with colPG1:
+            pg_time = st.selectbox("Time of day", ["Day", "Night"], key='pg_time', index=0)
+        with colPG2:
+            if pg_time == "Day":
+                pg_condition_label = st.selectbox(
+                    "Incoming solar radiation",
+                    ["Strong (sunny summer day)", "Moderate", "Slight (overcast/winter)"],
+                    key='pg_condition_day', index=0
+                )
+                condition_key = pg_condition_label.split()[0].lower()
+            else:
+                pg_condition_label = st.selectbox(
+                    "Cloud cover at night",
+                    ["Cloudy (≥4/8 cloud cover)", "Clear (<3/8 cloud cover)"],
+                    key='pg_condition_night', index=0
+                )
+                condition_key = "cloudy" if "Cloudy" in pg_condition_label else "clear"
+
+        # Use surface wind for the PG table lookup
+        raw_label, solver_stab_class = determine_stability_class(
+            float(solver_U_surface), pg_time.lower(), condition_key
+        )
+        st.success(
+            f"**PG Table lookup →**  Surface wind: **{solver_U_surface:.2f} m/s** | "
+            f"Condition: **{pg_condition_label}** | "
+            f"Table entry: **{raw_label}** → resolved to **Class {solver_stab_class}** "
+            f"({stability_options[solver_stab_class]})"
+        )
+
+    elif not use_custom_sigma:
+        solver_stab_class = st.selectbox(
+            "Atmospheric Stability Class",
+            options=list(stability_options.keys()),
+            format_func=lambda x: stability_options[x],
+            index=3, key='stability_solver_key'
+        )
+        raw_label = solver_stab_class
+        pg_time = None
+        pg_condition_label = None
+    else:
+        solver_stab_class = 'D'
+        raw_label = 'D'
+        pg_time = None
+        pg_condition_label = None
+
+    st.markdown("---")
+
+    # ── 5. Receptor location ──────────────────────────────────────────────────
+    st.subheader("5. Receptor Location — C(x, y, z, H)")
     colX, colY, colZ = st.columns(3)
     with colX:
-        solver_x = st.number_input("Downwind Distance ($x$, m)", min_value=1.0, value=1000.0, step=10.0, key='x_input_solver')
+        solver_x = st.number_input(
+            "Downwind Distance ($x$, m)", min_value=1.0, value=1000.0,
+            step=10.0, key='x_input_solver'
+        )
     with colY:
-        solver_y = st.number_input("Crosswind Distance ($y$, m)", value=0.0, step=10.0, key='y_input_solver')
+        solver_y = st.number_input(
+            "Crosswind Distance ($y$, m)", value=0.0, step=10.0,
+            key='y_input_solver'
+        )
     with colZ:
-        solver_z = st.number_input("Vertical Height ($z$, m)", value=0.0, step=10.0, key='z_input_solver')
+        solver_z = st.number_input(
+            "Receptor Height ($z$, m)", value=0.0, step=10.0,
+            key='z_input_solver'
+        )
 
-    if st.button("Run Calculations for Custom Parameters", key='solve_button'):
-        st.subheader("Calculated Results")
+    st.markdown("---")
 
-        if use_custom_sigma:
-            point_C_g_m3 = calculate_point_concentration_custom_sigma(float(solver_x), float(solver_y), float(solver_z), float(solver_H), float(solver_Q), float(solver_U), float(solver_sigma_y), float(solver_sigma_z))
-            max_C_g_m3 = point_C_g_m3
-            max_x_loc = solver_x
-            sigma_y_used = solver_sigma_y
-            sigma_z_used = solver_sigma_z
-            st.info("Since fixed $\\sigma_y$ and $\\sigma_z$ were used, $C_{max}$ is simply the concentration at the point specified, and $x_{max}$ is set to the input $x$ distance.")
-        else:
-            point_C_g_m3 = calculate_single_point_concentration(float(solver_x), float(solver_y), float(solver_z), float(solver_H), float(solver_Q), float(solver_U), solver_stab_class)
-            max_C_g_m3, max_x_loc = find_max_concentration(solver_H, solver_Q, solver_U, solver_stab_class)
-            sigma_y_used, sigma_z_used = get_dispersion_coefficients(float(solver_x), solver_stab_class)
+    # ── Calculate ─────────────────────────────────────────────────────────────
+    if st.button("▶  Run Calculation", key='solve_button', type='primary'):
 
-        point_C_ug_m3 = point_C_g_m3 * 1e6
-        max_C_ug_m3 = max_C_g_m3 * 1e6
+        st.subheader("Step-by-Step Solution")
 
-        colR1, colR2 = st.columns(2)
-        with colR1:
-            st.metric(label=f"Concentration at $C({solver_x} m, {solver_y} m, {solver_z} m)$", value=f"{point_C_ug_m3:,.2f} µg/m³")
-        with colR2:
-            if not use_custom_sigma or (use_custom_sigma and max_x_loc == solver_x):
-                st.metric(label="Maximum Ground Concentration ($C_{max}$)", value=f"{max_C_ug_m3:,.2f} µg/m³")
+        # Step 1 · Given data ─────────────────────────────────────────────────
+        with st.expander("Step 1 — Given Data", expanded=True):
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                st.markdown(f"""
+| Parameter | Value |
+|-----------|-------|
+| Emission rate $Q$ | **{solver_Q:.3f} g/s** |
+| Effective stack height $H$ | **{solver_H:.1f} m** |
+| Wind speed (model input $U$) | **{solver_U_model:.3f} m/s** |
+| Receptor $(x,\\,y,\\,z)$ | **({solver_x:.0f}, {solver_y:.0f}, {solver_z:.0f}) m** |
+""")
+            with col_g2:
+                if wind_correction_info is not None:
+                    if wind_correction_info['mode'] == 'stack_to_surface':
+                        st.markdown("**Wind height correction (stack → surface):**")
+                        st.latex(
+                            rf"u_0 = u_H \left(\frac{{10}}{{H}}\right)^p = "
+                            rf"{wind_correction_info['u_in']:.2f}"
+                            rf"\left(\frac{{10}}{{{wind_correction_info['H']:.0f}}}\right)^{{{wind_correction_info['p']:.2f}}}"
+                            rf"= {wind_correction_info['u_out']:.3f}\;\text{{m/s}}"
+                        )
+                    else:
+                        st.markdown("**Wind height correction (reference → stack):**")
+                        st.latex(
+                            rf"U(H) = U(z_1)\left(\frac{{H}}{{z_1}}\right)^p = "
+                            rf"{wind_correction_info['u_in']:.2f}"
+                            rf"\left(\frac{{{wind_correction_info['H']:.0f}}}{{{wind_correction_info['z_ref']:.0f}}}\right)^{{{wind_correction_info['p']:.2f}}}"
+                            rf"= {wind_correction_info['u_out']:.3f}\;\text{{m/s}}"
+                        )
+                else:
+                    st.markdown("Wind speed entered directly at 10 m — no height correction applied.")
 
+        # Step 2 · Stability class ────────────────────────────────────────────
+        with st.expander("Step 2 — Stability Class Determination", expanded=True):
+            if not use_custom_sigma and auto_stability:
+                st.markdown(
+                    f"From the Pasquill–Gifford table:  \n"
+                    f"Surface wind **{solver_U_surface:.2f} m/s** + **{pg_condition_label}** "
+                    f"→ table entry **{raw_label}** → resolved to **Stability Class {solver_stab_class}** "
+                    f"({stability_options[solver_stab_class]})"
+                )
+            elif use_custom_sigma:
+                st.markdown(
+                    f"Using custom σ values (σ_y = {solver_sigma_y:.2f} m, "
+                    f"σ_z = {solver_sigma_z:.2f} m) — stability class not required."
+                )
+            else:
+                st.markdown(
+                    f"Manually selected: **Class {solver_stab_class}** "
+                    f"({stability_options[solver_stab_class]})"
+                )
+
+        # Step 3 · Dispersion coefficients ────────────────────────────────────
+        with st.expander(f"Step 3 — Dispersion Coefficients at x = {solver_x:.0f} m", expanded=True):
+            if use_custom_sigma:
+                sigma_y_used = float(solver_sigma_y)
+                sigma_z_used = float(solver_sigma_z)
+                st.markdown(
+                    f"Custom values supplied:  \n"
+                    f"$\\sigma_y = {sigma_y_used:.2f}$ m,  "
+                    f"$\\sigma_z = {sigma_z_used:.2f}$ m"
+                )
+            else:
+                sigma_y_used, sigma_z_used = get_dispersion_coefficients(float(solver_x), solver_stab_class)
+                idx = SIGMA_COEFFS['index'][solver_stab_class]
+                Ay = SIGMA_COEFFS['y']['A'][idx]
+                By = SIGMA_COEFFS['y']['B'][idx]
+                Az = SIGMA_COEFFS['z']['A'][idx]
+                Bz = SIGMA_COEFFS['z']['B'][idx]
+                col_s1, col_s2 = st.columns(2)
+                with col_s1:
+                    st.markdown("**Lateral ($\\sigma_y$):**")
+                    st.latex(
+                        rf"\sigma_y = {Ay}\cdot x^{{{By}}} = "
+                        rf"{Ay}\times{solver_x:.0f}^{{{By}}} = {sigma_y_used:.2f}\;\text{{m}}"
+                    )
+                with col_s2:
+                    st.markdown("**Vertical ($\\sigma_z$):**")
+                    st.latex(
+                        rf"\sigma_z = {Az}\cdot x^{{{Bz}}} = "
+                        rf"{Az}\times{solver_x:.0f}^{{{Bz}}} = {sigma_z_used:.2f}\;\text{{m}}"
+                    )
+
+        # Step 4 · Concentration at receptor ──────────────────────────────────
+        with st.expander("Step 4 — Concentration at Receptor", expanded=True):
+            if use_custom_sigma:
+                point_C_g_m3 = calculate_point_concentration_custom_sigma(
+                    float(solver_x), float(solver_y), float(solver_z),
+                    float(solver_H), float(solver_Q), float(solver_U_model),
+                    sigma_y_used, sigma_z_used
+                )
+            else:
+                point_C_g_m3 = calculate_single_point_concentration(
+                    float(solver_x), float(solver_y), float(solver_z),
+                    float(solver_H), float(solver_Q), float(solver_U_model),
+                    solver_stab_class
+                )
+            point_C_ug_m3 = point_C_g_m3 * 1e6
+
+            # Numerical substitution
+            exp_y_val  = np.exp(-float(solver_y)**2 / (2 * sigma_y_used**2))
+            exp_zr_val = np.exp(-(float(solver_z) - float(solver_H))**2 / (2 * sigma_z_used**2))
+            exp_zi_val = np.exp(-(float(solver_z) + float(solver_H))**2 / (2 * sigma_z_used**2))
+            denom_val  = 2 * np.pi * float(solver_U_model) * sigma_y_used * sigma_z_used
+
+            st.markdown("**Gaussian plume equation:**")
+            st.latex(
+                r"C(x,y,z) = \frac{Q}{2\pi\,U\,\sigma_y\,\sigma_z}"
+                r"\exp\!\left(-\frac{y^2}{2\sigma_y^2}\right)"
+                r"\left[\exp\!\left(-\frac{(z-H)^2}{2\sigma_z^2}\right)"
+                r"+\exp\!\left(-\frac{(z+H)^2}{2\sigma_z^2}\right)\right]"
+            )
+            st.markdown("**Substituting values:**")
+            st.latex(
+                rf"C = \frac{{{solver_Q:.3f}}}{{{denom_val:.4f}}}"
+                rf"\times{exp_y_val:.4f}"
+                rf"\times\left[{exp_zr_val:.4f}+{exp_zi_val:.4f}\right]"
+                rf"= {point_C_g_m3:.4e}\;\text{{g/m}}^3"
+            )
+            st.success(
+                f"**C({solver_x:.0f}, {solver_y:.0f}, {solver_z:.0f}) = "
+                f"{point_C_ug_m3:,.4f} µg/m³ "
+                f"= {point_C_g_m3:.4e} g/m³**"
+            )
+
+        # Step 5 · Maximum ground concentration ───────────────────────────────
         if not use_custom_sigma:
-            st.metric(label="Location of Maximum Ground Concentration ($x_{max}$)", value=f"{max_x_loc:,.1f} m")
+            with st.expander("Step 5 — Maximum Ground-Level Concentration & Location", expanded=True):
+                max_C_g_m3, max_x_loc = find_max_concentration(
+                    float(solver_H), float(solver_Q), float(solver_U_model), solver_stab_class
+                )
+                max_C_ug_m3 = max_C_g_m3 * 1e6
+                sigma_y_xmax, sigma_z_xmax = get_dispersion_coefficients(max_x_loc, solver_stab_class)
 
-        st.markdown(f"""
-        **Dispersion Coefficients Used at $x={solver_x} \\,\\text{{m}}$:**
-        * $\\sigma_y$: **{sigma_y_used:,.2f} $\\text{{m}}$**
-        * $\\sigma_z$: **{sigma_z_used:,.2f} $\\text{{m}}$**
-        """)
+                col_mx1, col_mx2, col_mx3 = st.columns(3)
+                with col_mx1:
+                    st.metric("$C_{max}$ (ground, centreline)", f"{max_C_ug_m3:,.4f} µg/m³")
+                with col_mx2:
+                    st.metric("Location $x_{max}$", f"{max_x_loc:,.0f} m")
+                with col_mx3:
+                    st.metric("Plume half-width $2\\sigma_y$ at $x_{max}$", f"{2*sigma_y_xmax:,.1f} m")
+                st.markdown(
+                    f"Plume mixing-height estimate $4.3\\,\\sigma_z$ at $x_{{max}}$: "
+                    f"**{4.3*sigma_z_xmax:,.1f} m**"
+                )
+        else:
+            max_C_g_m3 = point_C_g_m3
+            max_x_loc = float(solver_x)
+
+        # Results summary row ─────────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("Results Summary")
+        colR1, colR2, colR3 = st.columns(3)
+        with colR1:
+            st.metric(
+                label=f"C({solver_x:.0f}, {solver_y:.0f}, {solver_z:.0f}) m",
+                value=f"{point_C_ug_m3:,.4f} µg/m³"
+            )
+        with colR2:
+            st.metric(label="$\\sigma_y$ at x", value=f"{sigma_y_used:,.2f} m")
+        with colR3:
+            st.metric(label="$\\sigma_z$ at x", value=f"{sigma_z_used:,.2f} m")
 
         st.markdown("---")
-        st.subheader("Solver — Interactive Contour (hover to read values, zoom/pan available)")
+
+        # Contour visualisation ───────────────────────────────────────────────
+        st.subheader("Concentration Contour Map (hover / zoom / pan)")
 
         x_plot_max = max(2.0 * float(solver_x), 500.0)
         x_plot_min = max(0.1, float(solver_x) * 0.01)
         x_plot = np.linspace(x_plot_min, x_plot_max, 160)
 
-        if use_custom_sigma:
-            crosswind_half = max(3.0 * float(solver_sigma_y), 200.0)
-        else:
-            try:
-                est_sigma_y, _ = get_dispersion_coefficients(float(solver_x), solver_stab_class)
-            except Exception:
-                est_sigma_y = 100.0
-            crosswind_half = max(3.0 * est_sigma_y, 200.0)
-
+        crosswind_half = max(3.0 * sigma_y_used, 200.0)
         y_plot = np.linspace(-crosswind_half, crosswind_half, 120)
         Xp, Yp = np.meshgrid(x_plot, y_plot)
-        Cp = np.zeros_like(Xp, dtype=float)
 
         if use_custom_sigma:
+            Cp = np.zeros_like(Xp, dtype=float)
             for ii in range(Xp.shape[0]):
                 for jj in range(Xp.shape[1]):
-                    xx = float(Xp[ii, jj])
-                    yy = float(Yp[ii, jj])
-                    Cp[ii, jj] = calculate_point_concentration_custom_sigma(xx, yy, float(solver_z), float(solver_H), float(solver_Q), float(solver_U), float(solver_sigma_y), float(solver_sigma_z))
-            plot_mode_label = f"Solver Visualization (Custom σ) at z={solver_z} m"
+                    Cp[ii, jj] = calculate_point_concentration_custom_sigma(
+                        float(Xp[ii, jj]), float(Yp[ii, jj]),
+                        float(solver_z), float(solver_H),
+                        float(solver_Q), float(solver_U_model),
+                        solver_sigma_y, solver_sigma_z
+                    )
+            plot_mode_label = f"Solver — Custom σ, z = {solver_z:.0f} m"
         else:
-            Cp = gaussian_plume_model(Xp, Yp, float(solver_z), float(solver_H), float(solver_Q), float(solver_U), solver_stab_class)
-            plot_mode_label = f"Solver Visualization (Pasquill-Gifford: {solver_stab_class}) at z={solver_z} m"
+            Cp = gaussian_plume_model(
+                Xp, Yp, float(solver_z), float(solver_H),
+                float(solver_Q), float(solver_U_model), solver_stab_class
+            )
+            plot_mode_label = (
+                f"Solver — Class {solver_stab_class}, "
+                f"U = {solver_U_model:.2f} m/s, z = {solver_z:.0f} m"
+            )
 
         Cp_ug = Cp * 1e6
-
-        fig_pl = go.Figure(data=go.Contour(z=Cp_ug, x=x_plot, y=y_plot, colorscale='Viridis', contours=dict(showlabels=False), colorbar=dict(title="Concentration (µg m⁻³)"), hovertemplate='x: %{x:.1f} m<br>y: %{y:.1f} m<br>C: %{z:.2f} µg m⁻³<extra></extra>'))
-        fig_pl.add_trace(go.Scatter(x=[0.0], y=[0.0], mode='markers', marker=dict(color='red', size=6), name='Stack (0,0)', hoverinfo='skip'))
-        fig_pl.update_layout(title=plot_mode_label, xaxis_title='Downwind distance x (m)', yaxis_title='Crosswind distance y (m)', autosize=True, margin=dict(l=40, r=20, t=50, b=40))
+        fig_pl = go.Figure(data=go.Contour(
+            z=Cp_ug, x=x_plot, y=y_plot,
+            colorscale='Viridis', contours=dict(showlabels=False),
+            colorbar=dict(title="Concentration (µg m⁻³)"),
+            hovertemplate='x: %{x:.1f} m<br>y: %{y:.1f} m<br>C: %{z:.4f} µg m⁻³<extra></extra>'
+        ))
+        # Mark receptor and stack
+        fig_pl.add_trace(go.Scatter(
+            x=[float(solver_x)], y=[float(solver_y)],
+            mode='markers',
+            marker=dict(color='cyan', size=10, symbol='x', line=dict(width=2)),
+            name=f'Receptor ({solver_x:.0f}, {solver_y:.0f})'
+        ))
+        fig_pl.add_trace(go.Scatter(
+            x=[0.0], y=[0.0], mode='markers',
+            marker=dict(color='red', size=8),
+            name='Stack (0, 0)', hoverinfo='skip'
+        ))
+        fig_pl.update_layout(
+            title=plot_mode_label,
+            xaxis_title='Downwind distance x (m)',
+            yaxis_title='Crosswind distance y (m)',
+            autosize=True, margin=dict(l=40, r=20, t=50, b=40)
+        )
         st.plotly_chart(fig_pl, use_container_width=True)
+        st.caption(
+            "Red dot = stack origin (0, 0).  "
+            "Cyan × = your receptor point.  "
+            "Hover anywhere to read concentration."
+        )
 
 def _build_theory_tab():
     st.header("Gaussian Plume Model Theory & Assumptions")
