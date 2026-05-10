@@ -1501,7 +1501,18 @@ def _build_solver_tab(stability_options):
             title=plot_mode_label,
             xaxis_title='Downwind distance x (m)',
             yaxis_title='Crosswind distance y (m)',
-            autosize=True, margin=dict(l=40, r=20, t=50, b=40)
+            autosize=True,
+            margin=dict(l=40, r=120, t=50, b=40),
+            legend=dict(
+                x=0.01,
+                y=0.01,
+                xanchor='left',
+                yanchor='bottom',
+                bgcolor='rgba(0,0,0,0.45)',
+                bordercolor='rgba(255,255,255,0.3)',
+                borderwidth=1,
+                font=dict(color='white', size=11),
+            )
         )
         st.plotly_chart(fig_pl, use_container_width=True)
         st.caption(
