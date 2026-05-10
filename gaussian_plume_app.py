@@ -335,6 +335,599 @@ def determine_stability_class(u_surface: float, time_of_day: str, condition: str
     return _PG_NIGHT.get((wb, condition), ('D', 'D'))
 
 # -------------------------
+# Plume Behaviour Types — Catalogue, Physics & Visualisation
+# -------------------------
+
+PLUME_CATALOGUE = [
+    dict(key='looping',    name='Looping',    stability='A', model='gaussian',
+         badge='#e74c3c', condition='Extremely Unstable',
+         sky_wind='Clear sky, strong insolation, light wind (1–3 m/s)',
+         time_of_day='Sunny summer afternoon',
+         blurb='Large thermal eddies carry the plume steeply up and down. '
+               'The Gaussian envelope is very wide vertically. '
+               'Worst case for intermittent high ground concentrations.'),
+    dict(key='coning',     name='Coning',     stability='C', model='gaussian',
+         badge='#e67e22', condition='Slightly Unstable',
+         sky_wind='Partly cloudy, moderate wind (4–6 m/s)',
+         time_of_day='Cloudy daytime',
+         blurb='Symmetric Gaussian spread in y and z — the classic textbook plume. '
+               'Moderate ground-level impact at intermediate distances.'),
+    dict(key='fanning',    name='Fanning',    stability='F', model='gaussian',
+         badge='#2980b9', condition='Moderately Stable',
+         sky_wind='Clear night, very light wind (<2 m/s)',
+         time_of_day='Clear calm night',
+         blurb='Strong stability suppresses vertical mixing. The plume stretches '
+               'as a thin horizontal ribbon. Very low ground concentrations near the source.'),
+    dict(key='neutral',    name='Neutral',    stability='D', model='gaussian',
+         badge='#7f8c8d', condition='Neutral',
+         sky_wind='Full overcast or wind > 6 m/s',
+         time_of_day='Overcast / high wind',
+         blurb='Mechanical turbulence dominates. Moderate symmetric spreading. '
+               'The reference condition used in most regulatory dispersion models.'),
+    dict(key='lofting',    name='Lofting',    stability='B', model='lofting',
+         badge='#27ae60', condition='Unstable above stack, stable below',
+         sky_wind='Surface cooling, warm residual layer aloft',
+         time_of_day='Late afternoon / early evening',
+         blurb='A stable surface layer prevents the plume from mixing downward. '
+               'Disperses freely upward. Best condition for ground-level receptors — '
+               'surface concentrations near the source are very low.'),
+    dict(key='fumigating', name='Fumigating', stability='D', model='fumigating',
+         badge='#f39c12', condition='Inversion breaking down, convective layer growing',
+         sky_wind='Post-sunrise, sun eroding nocturnal inversion',
+         time_of_day='Early morning after sunrise',
+         blurb='The overnight stable layer stores an elevated plume. When the growing '
+               'convective layer reaches it, pollution is rapidly swept to the ground — '
+               'highest short-term ground concentrations of any plume regime.'),
+    dict(key='trapping',   name='Trapping',   stability='E', model='trapping',
+         badge='#8e44ad', condition='Inversion lid above plume',
+         sky_wind='Anticyclone / subsidence inversion',
+         time_of_day='Anticyclonic days or nights',
+         blurb='An elevated inversion acts as a ceiling at height L. The plume bounces '
+               'between ground and lid. Concentrations accumulate — dangerous in valleys '
+               'or under stagnant anticyclones.'),
+]
+
+_PLUME_KEY_MAP = {p['key']: p for p in PLUME_CATALOGUE}
+
+_TEMP_PROFILES = {
+    'A': dict(lapse=-12.5, color='#e74c3c'),
+    'B': dict(lapse=-11.0, color='#e67e22'),
+    'C': dict(lapse=-10.2, color='#f39c12'),
+    'D': dict(lapse=-9.8,  color='#7f8c8d'),
+    'E': dict(lapse=-5.0,  color='#3498db'),
+    'F': dict(lapse=-1.5,  color='#2980b9'),
+}
+
+_TEMP_EXPLANATIONS = {
+    'A': ("**Class A — Superadiabatic:** The environment cools faster with height than a rising parcel would. "
+          "Displaced parcels keep rising — strong convective eddies produce the chaotic **looping** plume. "
+          "Worst case for intermittent peak ground concentrations."),
+    'B': ("**Class B — Moderately superadiabatic:** Less convective than Class A. The plume rises and "
+          "meanders noticeably but without extreme loops. Moderate-to-high vertical mixing."),
+    'C': ("**Class C — Slightly unstable:** Close to neutral with a slight convective tendency. Produces a "
+          "regular **coning** plume under broken cloud cover or light sunshine."),
+    'D': ("**Class D — Neutral:** Environmental lapse rate equals the DALR exactly. No buoyancy-driven "
+          "mixing — mechanical wind shear dominates. Moderate symmetric spreading. The baseline regulatory "
+          "reference condition."),
+    'E': ("**Class E — Slightly stable:** The environment cools more slowly than a rising parcel. "
+          "Displaced parcels return to their original level — vertical mixing suppressed. Plume spreads "
+          "mainly laterally with limited vertical growth."),
+    'F': ("**Class F — Moderately stable:** Near-isothermal or slight temperature inversion. Vertical "
+          "motions strongly suppressed — the **fanning** plume stretches as a thin ribbon, "
+          "sometimes persisting for tens of kilometres with little vertical dilution."),
+    'lofting': ("**Lofting:** A surface-based stable layer underlies an unstable residual layer at stack height. "
+                "Below the stack, vertical mixing is suppressed — the plume cannot reach the ground. "
+                "Above, it disperses freely upward. Ground-level concentrations near the source are very low — "
+                "the safest short-term condition for surface receptors."),
+    'fumigating': ("**Fumigating:** A nocturnal stable layer stored an elevated plume overnight. After sunrise, "
+                   "solar heating grows the convective boundary layer upward. When it reaches the plume height, "
+                   "the entire stored pollution mass is rapidly mixed to the ground — producing the "
+                   "**highest short-term ground concentrations** of any plume regime. Critical for morning "
+                   "air quality exceedances near industrial stacks."),
+    'trapping': ("**Trapping:** A subsidence or elevated inversion acts as a lid at height L. The plume "
+                 "cannot escape upward. As σ_z grows with downwind distance and approaches L, multiple "
+                 "reflections off the ground and lid build up concentration in the trapped layer. "
+                 "Particularly dangerous in valleys or under slow-moving anticyclones where the lid "
+                 "can persist for days."),
+}
+
+
+def _gaussian_lofting_xz(x_arr, z_arr, H, Q, U):
+    """X-Z field for lofting: Class B dispersion, no ground-reflection term. Returns (Nz,Nx) g/m³."""
+    positive = x_arr > 0
+    sigma_y, sigma_z = get_dispersion_coefficients(x_arr, 'B')
+    sy = sigma_y[np.newaxis, :]
+    sz = sigma_z[np.newaxis, :]
+    Zg = z_arr[:, np.newaxis]
+    exp_zr = np.exp(-(Zg - float(H)) ** 2 / (2 * sz ** 2))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        C = np.where(positive[np.newaxis, :], Q / (2 * np.pi * U * sy * sz) * exp_zr, 0.0)
+    return C
+
+
+def _gaussian_trapping_xz(x_arr, z_arr, H, Q, U, stability_class, L, N=5):
+    """X-Z field with inversion lid at L: image-source sum. Returns (Nz,Nx) g/m³."""
+    positive = x_arr > 0
+    sigma_y, sigma_z = get_dispersion_coefficients(x_arr, stability_class)
+    sy = sigma_y[np.newaxis, :]
+    sz = sigma_z[np.newaxis, :]
+    Zg = z_arr[:, np.newaxis]
+    vert = np.zeros((len(z_arr), len(x_arr)))
+    for n in range(-N, N + 1):
+        vert += (np.exp(-(Zg - float(H) - 2 * n * float(L)) ** 2 / (2 * sz ** 2))
+                 + np.exp(-(Zg + float(H) - 2 * n * float(L)) ** 2 / (2 * sz ** 2)))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        C = np.where(positive[np.newaxis, :], Q / (2 * np.pi * U * sy * sz) * vert, 0.0)
+    return C
+
+
+def _gaussian_fumigating_centreline(x_arr, H, Q, U):
+    """Ground-level fumigating centreline (y=0). Returns (Nx,) g/m³."""
+    positive = x_arr > 0
+    sigma_y_D, _ = get_dispersion_coefficients(x_arr, 'D')
+    _, sigma_z_F = get_dispersion_coefficients(x_arr, 'F')
+    denom = np.sqrt(2 * np.pi) * U * sigma_y_D * np.maximum(float(H) + 2 * sigma_z_F, 1.0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        C = np.where(positive, Q / denom, 0.0)
+    return C
+
+
+@st.cache_data
+def _pt_xz_field(plume_key, H, Q, U, mixing_height, mix_layer_h):
+    """Cached X-Z concentration field at y=0. Returns (x_arr, z_arr, C_ug)."""
+    x_arr = np.linspace(10.0, 3000.0, 200)
+    z_max = float(max(H * 2.5, mixing_height * 1.2, 400.0))
+    z_arr = np.linspace(0.0, z_max, 150)
+    p = _PLUME_KEY_MAP[plume_key]
+
+    if p['model'] == 'gaussian':
+        positive = x_arr > 0
+        sigma_y, sigma_z = get_dispersion_coefficients(x_arr, p['stability'])
+        sy = sigma_y[np.newaxis, :]
+        sz = sigma_z[np.newaxis, :]
+        Zg = z_arr[:, np.newaxis]
+        exp_zr = np.exp(-(Zg - float(H)) ** 2 / (2 * sz ** 2))
+        exp_zi = np.exp(-(Zg + float(H)) ** 2 / (2 * sz ** 2))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            C = np.where(positive[np.newaxis, :],
+                         Q / (2 * np.pi * U * sy * sz) * (exp_zr + exp_zi), 0.0)
+    elif p['model'] == 'lofting':
+        C = _gaussian_lofting_xz(x_arr, z_arr, H, Q, U)
+    elif p['model'] == 'fumigating':
+        C_ground = _gaussian_fumigating_centreline(x_arr, H, Q, U)  # (Nx,)
+        Z2 = z_arr[:, np.newaxis]  # (Nz,1)
+        C = np.where(Z2 <= float(mix_layer_h), C_ground[np.newaxis, :], 0.0)
+    elif p['model'] == 'trapping':
+        C = _gaussian_trapping_xz(x_arr, z_arr, H, Q, U, p['stability'], mixing_height)
+    else:
+        C = np.zeros((len(z_arr), len(x_arr)))
+    return x_arr, z_arr, C * 1e6
+
+
+@st.cache_data
+def _pt_xy_field(plume_key, H, Q, U, mixing_height, mix_layer_h):
+    """Cached X-Y ground-level field. Returns (x_arr, y_arr, C_ug)."""
+    x_arr = np.linspace(10.0, 3000.0, 200)
+    y_arr = np.linspace(-500.0, 500.0, 150)
+    X2, Y2 = np.meshgrid(x_arr, y_arr)
+    p = _PLUME_KEY_MAP[plume_key]
+
+    if p['model'] == 'gaussian':
+        C = gaussian_plume_model(X2, Y2, 0.0, H, Q, U, p['stability'])
+    elif p['model'] == 'lofting':
+        positive = X2 > 0
+        sigma_y, sigma_z = get_dispersion_coefficients(np.where(positive, X2, 1e-6), 'B')
+        with np.errstate(divide='ignore', invalid='ignore'):
+            C = np.where(positive,
+                         Q / (2 * np.pi * U * sigma_y * sigma_z)
+                         * np.exp(-Y2 ** 2 / (2 * sigma_y ** 2))
+                         * np.exp(-float(H) ** 2 / (2 * sigma_z ** 2)), 0.0)
+    elif p['model'] == 'fumigating':
+        positive = X2 > 0
+        sigma_y_D, _ = get_dispersion_coefficients(np.where(positive, X2, 1e-6), 'D')
+        _, sigma_z_F = get_dispersion_coefficients(np.where(positive, X2, 1e-6), 'F')
+        denom = np.sqrt(2 * np.pi) * U * sigma_y_D * np.maximum(float(H) + 2 * sigma_z_F, 1.0)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            C = np.where(positive,
+                         Q / denom * np.exp(-Y2 ** 2 / (2 * sigma_y_D ** 2)), 0.0)
+    elif p['model'] == 'trapping':
+        positive = X2 > 0
+        sigma_y, sigma_z = get_dispersion_coefficients(np.where(positive, X2, 1e-6), p['stability'])
+        vert = np.zeros_like(X2)
+        for n in range(-5, 6):
+            vert += (np.exp(-(float(H) + 2 * n * float(mixing_height)) ** 2 / (2 * sigma_z ** 2))
+                     + np.exp(-(float(H) - 2 * n * float(mixing_height)) ** 2 / (2 * sigma_z ** 2)))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            C = np.where(positive,
+                         Q / (2 * np.pi * U * sigma_y * sigma_z)
+                         * np.exp(-Y2 ** 2 / (2 * sigma_y ** 2)) * vert, 0.0)
+    else:
+        C = np.zeros_like(X2)
+    return x_arr, y_arr, C * 1e6
+
+
+@st.cache_data
+def _pt_centreline(plume_key, H, Q, U, mixing_height, mix_layer_h):
+    """Cached ground-level centreline C(x,0,0). Returns (x_arr, C_ug)."""
+    x_arr = np.linspace(10.0, 3000.0, 300)
+    positive = x_arr > 0
+    p = _PLUME_KEY_MAP[plume_key]
+
+    if p['model'] == 'gaussian':
+        sigma_y, sigma_z = get_dispersion_coefficients(x_arr, p['stability'])
+        with np.errstate(divide='ignore', invalid='ignore'):
+            C = np.where(positive,
+                         Q / (2 * np.pi * U * sigma_y * sigma_z)
+                         * 2 * np.exp(-float(H) ** 2 / (2 * sigma_z ** 2)), 0.0)
+    elif p['model'] == 'lofting':
+        sigma_y, sigma_z = get_dispersion_coefficients(x_arr, 'B')
+        with np.errstate(divide='ignore', invalid='ignore'):
+            C = np.where(positive,
+                         Q / (2 * np.pi * U * sigma_y * sigma_z)
+                         * np.exp(-float(H) ** 2 / (2 * sigma_z ** 2)), 0.0)
+    elif p['model'] == 'fumigating':
+        C = _gaussian_fumigating_centreline(x_arr, H, Q, U)
+    elif p['model'] == 'trapping':
+        sigma_y, sigma_z = get_dispersion_coefficients(x_arr, p['stability'])
+        vert = np.zeros_like(x_arr)
+        for n in range(-5, 6):
+            vert += (np.exp(-(float(H) + 2 * n * float(mixing_height)) ** 2 / (2 * sigma_z ** 2))
+                     + np.exp(-(float(H) - 2 * n * float(mixing_height)) ** 2 / (2 * sigma_z ** 2)))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            C = np.where(positive,
+                         Q / (2 * np.pi * U * sigma_y * sigma_z) * vert, 0.0)
+    else:
+        C = np.zeros_like(x_arr)
+    return x_arr, C * 1e6
+
+
+@st.cache_data
+def _pt_thumbnail(plume_key, mixing_height=300, mix_layer_h=150):
+    """Small dark X-Z thumbnail for gallery cards. Returns PNG bytes."""
+    x_arr, z_arr, C_ug = _pt_xz_field(plume_key, 80, 100, 4, mixing_height, mix_layer_h)
+    fig, ax = plt.subplots(figsize=(2.8, 1.4))
+    fig.patch.set_facecolor('#111827')
+    ax.set_facecolor('#111827')
+    vmax = float(np.nanpercentile(C_ug[C_ug > 0], 95)) if np.any(C_ug > 0) else 1.0
+    ax.contourf(x_arr, z_arr, C_ug, levels=10, cmap='viridis', vmin=0.0, vmax=vmax)
+    ax.axhline(80, color='white', lw=0.7, linestyle='--', alpha=0.45)
+    ax.plot(0, 80, 'r^', ms=4, clip_on=False)
+    p = _PLUME_KEY_MAP[plume_key]
+    if p['model'] == 'trapping':
+        ax.axhline(mixing_height, color='#ff6b6b', lw=0.8, linestyle=':', alpha=0.7)
+    if p['model'] == 'fumigating':
+        ax.axhline(mix_layer_h, color='#f1c40f', lw=0.8, linestyle=':', alpha=0.7)
+    ax.set_xlim(0, 3000)
+    ax.set_ylim(z_arr[0], z_arr[-1])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    fig.tight_layout(pad=0.1)
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=80, bbox_inches='tight', facecolor='#111827')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def _make_plume_figure(plume_key, view_mode, H, Q, U, mixing_height, mix_layer_h, show_sigma):
+    """Return a Plotly figure for the selected plume type and view mode."""
+    p = _PLUME_KEY_MAP[plume_key]
+
+    if view_mode == 'X–Z cross-section':
+        x_arr, z_arr, C_ug = _pt_xz_field(plume_key, H, Q, U, mixing_height, mix_layer_h)
+        fig = go.Figure(data=go.Contour(
+            z=C_ug, x=x_arr, y=z_arr, colorscale='Viridis',
+            contours=dict(showlabels=False),
+            colorbar=dict(title='µg/m³', len=0.75, thickness=12),
+            hovertemplate='x: %{x:.0f} m<br>z: %{y:.0f} m<br>C: %{z:.2f} µg/m³<extra></extra>'
+        ))
+        fig.add_trace(go.Scatter(
+            x=[0], y=[H], mode='markers',
+            marker=dict(color='red', size=9, symbol='triangle-up'),
+            name=f'Stack (H={H} m)'
+        ))
+        fig.add_shape(type='line', x0=x_arr[0], x1=x_arr[-1], y0=H, y1=H,
+                      line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'))
+        if show_sigma and p['model'] in ('gaussian', 'lofting'):
+            stab_env = 'B' if p['model'] == 'lofting' else p['stability']
+            _, sz_e = get_dispersion_coefficients(x_arr, stab_env)
+            for mult, alpha, lbl in [(1, 0.55, '±1σz'), (2, 0.30, '±2σz')]:
+                hi = np.minimum(float(H) + mult * sz_e, z_arr[-1])
+                lo = np.maximum(float(H) - mult * sz_e, 0.0)
+                fig.add_trace(go.Scatter(
+                    x=np.concatenate([x_arr, x_arr[::-1]]),
+                    y=np.concatenate([hi, lo[::-1]]),
+                    fill='toself',
+                    fillcolor=f'rgba(255,255,255,{alpha * 0.09})',
+                    line=dict(color=f'rgba(255,255,255,{alpha})', width=1, dash='dash'),
+                    name=lbl
+                ))
+        if p['model'] == 'trapping':
+            fig.add_shape(type='line', x0=x_arr[0], x1=x_arr[-1],
+                          y0=mixing_height, y1=mixing_height,
+                          line=dict(color='rgba(255,100,100,0.85)', width=2, dash='dash'))
+            fig.add_annotation(x=x_arr[-1] * 0.97, y=mixing_height,
+                                text=f'Inversion lid  L = {mixing_height} m',
+                                showarrow=False, font=dict(color='#ff6b6b', size=10),
+                                xanchor='right', yanchor='bottom')
+        if p['model'] == 'fumigating':
+            fig.add_shape(type='line', x0=x_arr[0], x1=x_arr[-1],
+                          y0=mix_layer_h, y1=mix_layer_h,
+                          line=dict(color='rgba(241,196,15,0.8)', width=1.5, dash='dash'))
+            fig.add_annotation(x=x_arr[-1] * 0.97, y=mix_layer_h,
+                                text=f'Mixing layer  h = {mix_layer_h} m',
+                                showarrow=False, font=dict(color='#f1c40f', size=10),
+                                xanchor='right', yanchor='bottom')
+        fig.update_layout(
+            xaxis_title='Downwind distance x (m)', yaxis_title='Height z (m)',
+            height=400, margin=dict(l=50, r=120, t=35, b=50),
+            legend=dict(x=0.01, y=0.99, xanchor='left', yanchor='top',
+                        bgcolor='rgba(0,0,0,0.45)', bordercolor='rgba(255,255,255,0.2)',
+                        borderwidth=1, font=dict(color='white', size=10))
+        )
+
+    elif view_mode == 'X–Y ground level':
+        x_arr, y_arr, C_ug = _pt_xy_field(plume_key, H, Q, U, mixing_height, mix_layer_h)
+        fig = go.Figure(data=go.Contour(
+            z=C_ug, x=x_arr, y=y_arr, colorscale='Viridis',
+            contours=dict(showlabels=False),
+            colorbar=dict(title='µg/m³', len=0.75, thickness=12),
+            hovertemplate='x: %{x:.0f} m<br>y: %{y:.0f} m<br>C: %{z:.2f} µg/m³<extra></extra>'
+        ))
+        fig.add_trace(go.Scatter(
+            x=[0], y=[0], mode='markers', marker=dict(color='red', size=8),
+            name='Stack (0, 0)', hoverinfo='skip'
+        ))
+        if show_sigma:
+            stab_env = 'B' if p['model'] == 'lofting' else p['stability']
+            if p['model'] != 'fumigating':
+                sy_e, _ = get_dispersion_coefficients(x_arr, stab_env)
+                for mult, alpha, lbl in [(1, 0.70, '±1σy'), (2, 0.45, '±2σy')]:
+                    fig.add_trace(go.Scatter(
+                        x=x_arr, y=mult * sy_e,
+                        line=dict(color=f'rgba(255,255,255,{alpha})', width=1, dash='dash'),
+                        name=lbl, showlegend=True
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=x_arr, y=-mult * sy_e,
+                        line=dict(color=f'rgba(255,255,255,{alpha})', width=1, dash='dash'),
+                        name=f'-{mult}σy', showlegend=False
+                    ))
+        fig.update_layout(
+            xaxis_title='Downwind distance x (m)', yaxis_title='Crosswind distance y (m)',
+            height=400, margin=dict(l=50, r=120, t=35, b=50),
+            legend=dict(x=0.01, y=0.01, xanchor='left', yanchor='bottom',
+                        bgcolor='rgba(0,0,0,0.45)', bordercolor='rgba(255,255,255,0.2)',
+                        borderwidth=1, font=dict(color='white', size=10))
+        )
+
+    else:  # Centreline C vs x
+        x_arr, C_ug = _pt_centreline(plume_key, H, Q, U, mixing_height, mix_layer_h)
+        peak_idx = int(np.nanargmax(C_ug)) if np.any(C_ug > 0) else 0
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=x_arr, y=C_ug, mode='lines',
+            line=dict(color=p['badge'], width=2.5), name=p['name'],
+            hovertemplate='x: %{x:.0f} m<br>C: %{y:.3f} µg/m³<extra></extra>'
+        ))
+        if C_ug[peak_idx] > 0:
+            fig.add_trace(go.Scatter(
+                x=[x_arr[peak_idx]], y=[C_ug[peak_idx]],
+                mode='markers+text', marker=dict(color='red', size=10),
+                text=[f'  C_max = {C_ug[peak_idx]:.1f} µg/m³  at x = {x_arr[peak_idx]:.0f} m'],
+                textposition='middle right', showlegend=False
+            ))
+        fig.update_layout(
+            xaxis_title='Downwind distance x (m)',
+            yaxis_title='Ground-level concentration (µg/m³)',
+            height=400, margin=dict(l=60, r=40, t=35, b=50)
+        )
+    return fig
+
+
+def _make_temp_figure(plume_key, H_m, mixing_height):
+    """Return (matplotlib_fig, explanation_str) for the temperature profile panel."""
+    p = _PLUME_KEY_MAP[plume_key]
+    prof_key = p['model'] if p['model'] in ('lofting', 'fumigating', 'trapping') else p['stability']
+    explanation = _TEMP_EXPLANATIONS.get(prof_key, '')
+
+    z_temp = np.linspace(0.0, max(float(H_m) * 3.5, float(mixing_height) * 1.35, 700.0), 300)
+    T0 = 15.0
+    DALR = T0 + z_temp * (-9.8 / 1000.0)
+
+    if prof_key == 'lofting':
+        T_env = np.where(z_temp <= float(H_m),
+                         T0 + z_temp * (-2.0 / 1000.0),
+                         T0 + z_temp * (-12.0 / 1000.0))
+        color = '#27ae60'
+    elif prof_key == 'fumigating':
+        brk = min(float(H_m) * 0.75, 150.0)
+        T_env = np.where(z_temp <= brk,
+                         T0 + z_temp * (-12.0 / 1000.0),
+                         T0 + brk * (-12.0 / 1000.0) + (z_temp - brk) * (4.5 / 1000.0))
+        color = '#f39c12'
+    elif prof_key == 'trapping':
+        T_env = np.where(z_temp <= float(mixing_height),
+                         T0 + z_temp * (-2.5 / 1000.0),
+                         T0 + float(mixing_height) * (-2.5 / 1000.0)
+                         + (z_temp - float(mixing_height)) * (5.5 / 1000.0))
+        color = '#8e44ad'
+    else:
+        pp = _TEMP_PROFILES.get(prof_key, _TEMP_PROFILES['D'])
+        T_env = T0 + z_temp * (pp['lapse'] / 1000.0)
+        color = pp['color']
+
+    fig, ax = plt.subplots(figsize=(2.8, 4.0))
+    fig.patch.set_facecolor('none')
+    ax.set_facecolor('none')
+    ax.fill_betweenx(z_temp, T_env, DALR, where=(T_env <= DALR),
+                     color='#e74c3c', alpha=0.13, label='Unstable zone')
+    ax.fill_betweenx(z_temp, T_env, DALR, where=(T_env > DALR),
+                     color='#3498db', alpha=0.13, label='Stable zone')
+    ax.plot(DALR, z_temp, 'k--', lw=1.5, alpha=0.55, label='DALR (−9.8°C/km)')
+    ax.plot(T_env, z_temp, color=color, lw=2.5, label='Env. lapse rate')
+    ax.axhline(float(H_m), color='red', lw=1.2, linestyle=':', alpha=0.85,
+               label=f'H = {int(H_m)} m')
+    if prof_key == 'trapping':
+        ax.axhline(float(mixing_height), color='#8e44ad', lw=1.5, linestyle='--',
+                   alpha=0.9, label=f'Lid  L = {int(mixing_height)} m')
+    ax.set_xlabel('Temperature (°C)', fontsize=9)
+    ax.set_ylabel('Height (m)', fontsize=9)
+    ax.tick_params(labelsize=8)
+    ax.legend(fontsize=7.5, loc='upper right', framealpha=0.55)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    fig.tight_layout(pad=0.5)
+    return fig, explanation
+
+
+def _build_plume_types_tab(Q_g_s, H_m, U_m_s):
+    st.subheader("Plume Behaviour Types")
+    st.markdown(
+        "Explore how atmospheric stability shapes a stack plume. "
+        "Select any type from the gallery to load the interactive detail view."
+    )
+
+    # Session state
+    if 'selected_plume' not in st.session_state:
+        st.session_state.selected_plume = 'coning'
+
+    # ── GALLERY ───────────────────────────────────────────────────────────────
+    st.markdown("#### Gallery — click to select")
+    gcols = st.columns(4)
+    for i, p in enumerate(PLUME_CATALOGUE):
+        with gcols[i % 4]:
+            is_sel = (st.session_state.selected_plume == p['key'])
+            border_w = '2.5px' if is_sel else '1px'
+            border_c = p['badge'] if is_sel else '#4b5563'
+            bg = p['badge'] + '22' if is_sel else 'transparent'
+            st.markdown(
+                f"""<div style="border:{border_w} solid {border_c};border-radius:10px;
+                padding:10px 8px 6px 8px;margin-bottom:4px;background:{bg};
+                text-align:center">
+                <span style="background:{p['badge']};color:#fff;font-size:10px;
+                font-weight:700;padding:2px 8px;border-radius:20px">
+                Class {p['stability']}</span>
+                <p style="font-size:13px;font-weight:700;margin:7px 0 2px;
+                color:var(--color-text-primary)">{p['name']}</p>
+                <p style="font-size:10px;color:#9ca3af;margin:0;
+                line-height:1.3">{p['time_of_day']}</p>
+                </div>""",
+                unsafe_allow_html=True
+            )
+            thumb_bytes = _pt_thumbnail(p['key'])
+            st.image(thumb_bytes, use_container_width=True)
+            if st.button(
+                '✓ Viewing' if is_sel else 'View',
+                key=f'gal_{p["key"]}',
+                use_container_width=True,
+                type='primary' if is_sel else 'secondary'
+            ):
+                st.session_state.selected_plume = p['key']
+                st.rerun()
+
+    st.markdown("---")
+
+    # ── DETAIL VIEW ───────────────────────────────────────────────────────────
+    sel = _PLUME_KEY_MAP[st.session_state.selected_plume]
+
+    hc1, hc2 = st.columns([3, 1])
+    with hc1:
+        st.markdown(
+            f"#### {sel['name']} Plume &nbsp;"
+            f"<span style='background:{sel['badge']};color:#fff;font-size:12px;"
+            f"padding:3px 11px;border-radius:12px'>Class {sel['stability']} — "
+            f"{sel['condition']}</span>",
+            unsafe_allow_html=True
+        )
+        st.caption(f"🕐  {sel['time_of_day']}   ·   🌤  {sel['sky_wind']}")
+        st.info(sel['blurb'])
+    with hc2:
+        compare_neutral = st.checkbox(
+            "Compare with Neutral (D)", value=False, key='cmp_neutral'
+        )
+
+    # Parameter sliders (seed from sidebar values)
+    st.markdown("**Adjust parameters:**")
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    with sc1:
+        pt_H = st.slider("Stack height H (m)", 20, 250, int(H_m), step=10, key='pt_H')
+    with sc2:
+        pt_U = st.slider("Wind speed U (m/s)", 1.0, 15.0,
+                          float(round(U_m_s * 2) / 2), step=0.5, key='pt_U')
+    with sc3:
+        pt_Q = st.slider("Emission rate Q (g/s)", 10, 500, int(Q_g_s), step=10, key='pt_Q')
+    with sc4:
+        view_mode = st.radio(
+            "View", ['X–Z cross-section', 'X–Y ground level', 'Centreline C vs x'],
+            key='pt_view', index=0
+        )
+
+    # Model-specific extra controls
+    mixing_height = 300
+    mix_layer_h = 150
+    if sel['model'] == 'trapping':
+        mixing_height = st.slider(
+            "Inversion lid height L (m)", 50, 800, 300, step=25, key='pt_mixh',
+            help="Drag to see concentration build up between the ground and the inversion lid."
+        )
+    if sel['model'] == 'fumigating':
+        mlh_max = max(int(pt_H) - 5, 35)
+        mlh_def = max(min(int(pt_H) // 2, 150), 30)
+        mlh_def = min(mlh_def, mlh_max)
+        mix_layer_h = st.slider(
+            "Convective mixing layer height (m)", 30, mlh_max, mlh_def, step=5, key='pt_mlh',
+            help="Height of the growing convective layer below the stable inversion."
+        )
+
+    tg1, tg2, _ = st.columns([1, 1, 2])
+    with tg1:
+        show_sigma = st.checkbox("Show σ envelope", value=True, key='pt_sig')
+    with tg2:
+        show_temp = st.checkbox("Show temperature profile", value=True, key='pt_temp')
+
+    # Main plot(s)
+    if compare_neutral and st.session_state.selected_plume != 'neutral':
+        lc, rc = st.columns(2)
+        with lc:
+            st.markdown(f"**{sel['name']} — Class {sel['stability']}**")
+            st.plotly_chart(
+                _make_plume_figure(st.session_state.selected_plume, view_mode,
+                                   pt_H, pt_Q, pt_U, mixing_height, mix_layer_h, show_sigma),
+                use_container_width=True
+            )
+        with rc:
+            st.markdown("**Neutral — Class D (reference)**")
+            st.plotly_chart(
+                _make_plume_figure('neutral', view_mode, pt_H, pt_Q, pt_U,
+                                   mixing_height, mix_layer_h, show_sigma),
+                use_container_width=True
+            )
+    else:
+        st.plotly_chart(
+            _make_plume_figure(st.session_state.selected_plume, view_mode,
+                               pt_H, pt_Q, pt_U, mixing_height, mix_layer_h, show_sigma),
+            use_container_width=True
+        )
+
+    # Temperature profile
+    if show_temp:
+        st.markdown("---")
+        st.markdown("**Atmospheric temperature profile — why this plume shape occurs**")
+        tp_col, exp_col = st.columns([1, 2])
+        with tp_col:
+            t_fig, t_exp = _make_temp_figure(
+                st.session_state.selected_plume, pt_H, mixing_height
+            )
+            st.pyplot(t_fig, use_container_width=True)
+            plt.close(t_fig)
+        with exp_col:
+            st.markdown(t_exp)
+
+
+# -------------------------
 # UI Building Functions
 # -------------------------
 def _configure_page():
@@ -421,8 +1014,8 @@ def _build_visualizer_tab(Q_g_s, H_m, U_m_s, stability_class, Z_RECEPTOR_M, stab
     st.caption(f"App version: {APP_VERSION}")
     st.markdown("An interactive model to explore how source parameters and atmospheric stability affect pollutant spread and ground-level concentration.")
 
-    # Tab order: Plume Visualizer, 3D Visualization, Problem Solver, Theory & Assumptions
-    tab1, tab2, tab3, tab4 = st.tabs(["Plume Visualizer", "3D Visualization", "Problem Solver", "Theory & Assumptions"])
+    # Tab order: Plume Visualizer, 3D Visualization, Problem Solver, Plume Behaviour Types, Theory & Assumptions
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Plume Visualizer", "3D Visualization", "Problem Solver", "Plume Behaviour Types", "Theory & Assumptions"])
 
     # --- Tab 1: Plume Visualizer ---
     with tab1:
@@ -674,8 +1267,12 @@ def _build_visualizer_tab(Q_g_s, H_m, U_m_s, stability_class, Z_RECEPTOR_M, stab
     with tab3:
         _build_solver_tab(stability_options)
 
-    # --- Tab 4: Theory & Assumptions (moved to last) ---
+    # --- Tab 4: Plume Behaviour Types ---
     with tab4:
+        _build_plume_types_tab(Q_g_s, H_m, U_m_s)
+
+    # --- Tab 5: Theory & Assumptions ---
+    with tab5:
         _build_theory_tab()
 
 def _build_3d_geometry_tab(H_m, Q_g_s, U_m_s, stability_class):
